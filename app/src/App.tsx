@@ -99,6 +99,40 @@ async function renderPdfPage(documentProxy: PDFDocumentProxy, pageNumber: number
   return canvas.toDataURL('image/png')
 }
 
+async function parseApiResponse(response: Response) {
+  const rawText = await response.text()
+  const contentType = response.headers.get('content-type') || ''
+  const isJson = contentType.includes('application/json')
+
+  if (isJson) {
+    try {
+      return {
+        ok: response.ok,
+        status: response.status,
+        payload: rawText ? JSON.parse(rawText) : null,
+      }
+    } catch {
+      return {
+        ok: false,
+        status: response.status,
+        payload: {
+          error: '接口返回了 JSON 响应头，但内容不是合法 JSON。',
+        },
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    status: response.status,
+    payload: {
+      error: rawText.trim().startsWith('<!DOCTYPE')
+        ? `接口返回了 HTML 页面，不是 JSON。状态码 ${response.status}。`
+        : rawText.slice(0, 500) || `接口返回了非 JSON 内容。状态码 ${response.status}。`,
+    },
+  }
+}
+
 function App() {
   const imageRef = useRef<HTMLImageElement | null>(null)
   const lastInspectedRef = useRef('')
@@ -242,13 +276,13 @@ function App() {
           }),
         })
 
-        const payload = await response.json()
-        if (!response.ok) {
-          throw new Error(payload.error || 'PDF 检索失败')
+        const { ok, payload } = await parseApiResponse(response)
+        if (!ok) {
+          throw new Error(payload?.error || 'PDF 检索失败')
         }
 
         setPdfInspect(payload)
-        setCaption(payload.captionCandidates[0]?.text ?? '')
+        setCaption(payload.captionCandidates?.[0]?.text ?? '')
         setStatus(payload.note || '已完成自动 caption 匹配')
       } catch (error) {
         const message = error instanceof Error ? error.message : 'PDF 检索失败'
@@ -368,9 +402,9 @@ function App() {
         }),
       })
 
-      const payload = await response.json()
-      if (!response.ok) {
-        throw new Error(payload.error || '解析失败')
+      const { ok, payload } = await parseApiResponse(response)
+      if (!ok) {
+        throw new Error(payload?.error || '解析失败')
       }
 
       setResult(payload)
@@ -515,7 +549,10 @@ function App() {
                 {topBodyEvidence ? (
                   <div className="evidence-card">
                     <strong>正文引用候选</strong>
-                    <p>页码：{topBodyEvidence.pageNumber}</p>
+                    <p>
+                      页码：{topBodyEvidence.pageNumber}
+                      {typeof topBodyEvidence.score === 'number' ? `；置信分：${topBodyEvidence.score}` : ''}
+                    </p>
                     <p>{topBodyEvidence.text}</p>
                   </div>
                 ) : null}

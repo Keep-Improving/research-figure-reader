@@ -9,11 +9,18 @@ const model = process.env.OPENAI_MODEL || 'gpt-5.4'
 const baseUrl = (process.env.OPENAI_BASE_URL || 'https://api.openai.com').replace(/\/+$/, '')
 
 app.use(cors())
-app.use(express.json({ limit: '35mb' }))
+app.use(express.json({ limit: '80mb' }))
+
+function sendJsonError(res, status, message, extra = {}) {
+  return res.status(status).json({
+    error: message,
+    ...extra,
+  })
+}
 
 function formatNetworkError(error) {
   if (!(error instanceof Error)) {
-    return `调用模型接口失败：${baseUrl}`
+    return `Model request failed: ${baseUrl}`
   }
 
   const causeMessage =
@@ -22,10 +29,10 @@ function formatNetworkError(error) {
       : ''
 
   if (causeMessage.includes('Connect Timeout') || causeMessage.includes('ETIMEDOUT')) {
-    return `连接模型接口超时：${baseUrl}。请检查当前网络、代理或中转服务。`
+    return `Connection to model endpoint timed out: ${baseUrl}`
   }
 
-  return causeMessage || error.message || `调用模型接口失败：${baseUrl}`
+  return causeMessage || error.message || `Model request failed: ${baseUrl}`
 }
 
 function extractOutputText(payload) {
@@ -54,9 +61,12 @@ function normalizeFigureLabel(label) {
 }
 
 function getCaptionStart(lineText) {
-  const match = normalizeWhitespace(lineText).match(
-    /^(?:Figure|Fig\.?|FIG\.?)\s*(\d+[A-Za-z]?)\s*(?:[|.:)]|\s\|)\s*(.+)?$/i,
-  )
+  const normalized = normalizeWhitespace(lineText)
+  if (/^(?:supplementary|extended data)\s+(?:figure|fig\.?)/i.test(normalized)) {
+    return null
+  }
+
+  const match = normalized.match(/^(?:Figure|Fig\.?|FIG\.?)\s*(\d+[A-Za-z]?)\s*(?:[|.:)]|\s\|)\s*(.+)?$/i)
   if (!match) return null
 
   return {
@@ -66,13 +76,15 @@ function getCaptionStart(lineText) {
 }
 
 function getFigureMentions(text) {
-  return [...String(text ?? '').matchAll(/\b(?:Figure|Fig\.?|FIG\.?)\s*(\d+[A-Za-z]?)\b/g)].map(
-    (match) => ({
-      label: match[1],
-      figureNumber: normalizeFigureLabel(match[1]),
+  const normalized = String(text ?? '')
+  return [...normalized.matchAll(/\b(?:(Supplementary|Extended Data)\s+)?(?:Figure|Fig\.?|FIG\.?)\s*(\d+[A-Za-z]?)\b/g)]
+    .map((match) => ({
+      label: match[2],
+      figureNumber: normalizeFigureLabel(match[2]),
       index: match.index ?? 0,
-    }),
-  )
+      isSupplementary: Boolean(match[1]),
+    }))
+    .filter((match) => !match.isSupplementary)
 }
 
 function splitRowIntoSegments(sortedItems, pageWidth) {
@@ -135,6 +147,194 @@ function buildPageLines(items, pageWidth) {
     })
     .filter((line) => line.text)
     .sort((a, b) => b.y - a.y || a.x - b.x)
+}
+
+function groupLinesIntoBlocks(lines, page) {
+  const sorted = [...lines].sort((a, b) => {
+    const columnDiff = lineColumn(a, page) - lineColumn(b, page)
+    if (columnDiff !== 0) return columnDiff
+    return b.y - a.y || a.x - b.x
+  })
+
+  const blocks = []
+  let current = []
+
+  for (const line of sorted) {
+    const previous = current[current.length - 1]
+    const sameColumn = !previous || lineColumn(previous, page) === lineColumn(line, page)
+    const verticalGap = previous ? previous.y - line.y : 0
+    const allowedGap = previous
+      ? Math.max(previous.height, line.height) * 2.2 + 10
+      : 0
+    const indentShift = previous ? Math.abs(previous.x - line.x) : 0
+    const shouldContinue =
+      previous &&
+      sameColumn &&
+      verticalGap >= 0 &&
+      verticalGap <= allowedGap &&
+      indentShift <= Math.max(page.width * 0.08, 48)
+
+    if (!shouldContinue && current.length > 0) {
+      blocks.push(current)
+      current = []
+    }
+
+    current.push(line)
+  }
+
+  if (current.length > 0) {
+    blocks.push(current)
+  }
+
+  return blocks.map((blockLines) => ({
+    lines: blockLines,
+    text: normalizeWhitespace(blockLines.map((line) => line.text).join(' ')),
+    topY: blockLines[0].y,
+    bottomY: blockLines[blockLines.length - 1].y,
+    column: lineColumn(blockLines[0], page),
+  }))
+}
+
+function detectPageLayout(page) {
+  const contentLines = page.lines.filter((line) => !looksLikeFooter(line, page))
+  const leftCount = contentLines.filter((line) => lineColumn(line, page) === 0).length
+  const rightCount = contentLines.filter((line) => lineColumn(line, page) === 1).length
+  const balancedColumns =
+    leftCount >= 12 &&
+    rightCount >= 12 &&
+    Math.min(leftCount, rightCount) / Math.max(leftCount, rightCount) >= 0.35
+
+  return balancedColumns ? 'multi-column' : 'single-column'
+}
+
+function blocksVerticallyOverlap(a, b) {
+  return Math.min(a.topY, b.topY) - Math.max(a.bottomY, b.bottomY)
+}
+
+function mergeCaptionCompanionBlocks(blocks, anchorBlock, page) {
+  const candidates = blocks
+    .filter((block) => block !== anchorBlock)
+    .filter((block) => block.column !== anchorBlock.column)
+    .filter((block) => !looksLikeSectionBoundary(block.lines[0]?.text ?? ''))
+    .filter((block) => {
+      const overlap = blocksVerticallyOverlap(anchorBlock, block)
+      const topDelta = Math.abs(block.topY - anchorBlock.topY)
+      const bottomDelta = Math.abs(block.bottomY - anchorBlock.bottomY)
+      return (
+        overlap >= -6 &&
+        topDelta <= Math.max(28, page.height * 0.035) &&
+        bottomDelta <= Math.max(42, page.height * 0.06)
+      )
+    })
+    .sort((a, b) => {
+      const overlapDiff = blocksVerticallyOverlap(b, anchorBlock) - blocksVerticallyOverlap(a, anchorBlock)
+      if (overlapDiff !== 0) return overlapDiff
+      return Math.abs(a.topY - anchorBlock.topY) - Math.abs(b.topY - anchorBlock.topY)
+    })
+
+  return [anchorBlock, ...candidates.slice(0, 1)]
+}
+
+function mergeCaptionVerticalBlocks(blocks, anchorBlock, page) {
+  const candidates = blocks
+    .filter((block) => block !== anchorBlock)
+    .filter((block) => block.column === anchorBlock.column)
+    .filter((block) => !looksLikeSectionBoundary(block.lines[0]?.text ?? ''))
+    .filter((block) => {
+      const verticalGap = anchorBlock.bottomY - block.topY
+      const xDelta = Math.abs(anchorBlock.lines[0].x - block.lines[0].x)
+      return (
+        verticalGap >= -4 &&
+        verticalGap <= Math.max(page.height * 0.04, 28) &&
+        xDelta <= Math.max(page.width * 0.06, 36)
+      )
+    })
+    .sort((a, b) => {
+      const gapA = Math.abs(anchorBlock.bottomY - a.topY)
+      const gapB = Math.abs(anchorBlock.bottomY - b.topY)
+      return gapA - gapB
+    })
+
+  return [anchorBlock, ...candidates.slice(0, 1)]
+}
+
+function orderCaptionBlocks(blocks, layoutMode) {
+  if (layoutMode === 'single-column') {
+    return [...blocks].sort((a, b) => b.topY - a.topY || a.column - b.column)
+  }
+
+  return [...blocks].sort((a, b) => a.column - b.column || b.topY - a.topY)
+}
+
+function looksLikeStandaloneUrl(lineText) {
+  return /^https?:\/\//i.test(normalizeWhitespace(lineText))
+}
+
+function getCaptionFlowMode(page, startLine) {
+  const nearbyBelow = page.lines.filter(
+    (line) => line.y <= startLine.y + 2 && line.y >= startLine.y - Math.max(70, page.height * 0.09),
+  )
+  const hasWideContinuation = nearbyBelow.some(
+    (line) =>
+      line.id !== startLine.id &&
+      line.x <= startLine.x + 12 &&
+      line.xMax >= page.width * 0.78,
+  )
+  const hasSameRowContinuation = nearbyBelow.some(
+    (line) =>
+      line.id !== startLine.id &&
+      Math.abs(line.y - startLine.y) <= 2 &&
+      line.x >= startLine.xMax - 8 &&
+      line.x - startLine.xMax <= 14 &&
+      startLine.xMax >= page.width * 0.48,
+  )
+
+  return hasWideContinuation || hasSameRowContinuation ? 'single-flow' : 'multi-column'
+}
+
+function buildSingleFlowCaptionLines(page, startLine) {
+  const rows = []
+  const candidateLines = page.lines
+    .filter((line) => line.y <= startLine.y + 2)
+    .filter((line) => !looksLikeFooter(line, page))
+    .filter((line) => !looksLikeStandaloneUrl(line.text))
+    .sort((a, b) => b.y - a.y || a.x - b.x)
+
+  for (const line of candidateLines) {
+    let row = rows.find((candidate) => Math.abs(candidate.y - line.y) <= 2.8)
+    if (!row) {
+      row = { y: line.y, lines: [] }
+      rows.push(row)
+    }
+    row.lines.push(line)
+  }
+
+  const orderedRows = rows.sort((a, b) => b.y - a.y)
+  const startRowIndex = orderedRows.findIndex((row) =>
+    row.lines.some((line) => line.id === startLine.id),
+  )
+  if (startRowIndex < 0) return [startLine]
+
+  const captionRows = []
+  let previousY = orderedRows[startRowIndex].y
+
+  for (let index = startRowIndex; index < orderedRows.length; index += 1) {
+    const row = orderedRows[index]
+    const gap = previousY - row.y
+
+    if (index > startRowIndex && gap > Math.max(13.5, startLine.height * 1.8 + 4)) {
+      break
+    }
+
+    const rowText = normalizeWhitespace(row.lines.map((line) => line.text).join(' '))
+    if (index > startRowIndex && looksLikeSectionBoundary(rowText)) break
+    if (index > startRowIndex && getCaptionStart(rowText)) break
+
+    captionRows.push(row)
+    previousY = row.y
+  }
+
+  return captionRows.flatMap((row) => row.lines.sort((a, b) => a.x - b.x))
 }
 
 async function loadPdfTextPagesFromDataUrl(pdfDataUrl) {
@@ -267,6 +467,15 @@ function extractCaptionKeywords(captionText) {
   return [...new Set((words ?? []).map(normalizeToken).filter((word) => word && !stopwords.has(word)))]
 }
 
+function isCaptionLine(line, captionBlocks) {
+  return captionBlocks.some((block) => {
+    if (block.pageNumber !== line.pageNumber) return false
+    const region = block.scoreRegion
+    if (line.y < region.bottomY || line.y > region.topY) return false
+    return region.lineIds.has(line.id)
+  })
+}
+
 function buildReadableParagraphs(page, captionBlocks) {
   const lines = page.lines
     .map((line) => ({ ...line, pageNumber: page.pageNumber }))
@@ -289,8 +498,6 @@ function buildReadableParagraphs(page, captionBlocks) {
         column: lineColumn(current[0], page),
         lines: current,
         text: normalizeWhitespace(current.map((item) => item.text).join(' ')),
-        startY: current[0].y,
-        endY: current[current.length - 1].y,
       })
       current = []
     }
@@ -304,54 +511,37 @@ function buildReadableParagraphs(page, captionBlocks) {
       column: lineColumn(current[0], page),
       lines: current,
       text: normalizeWhitespace(current.map((item) => item.text).join(' ')),
-      startY: current[0].y,
-      endY: current[current.length - 1].y,
     })
   }
 
   return paragraphs.filter((paragraph) => paragraph.text)
 }
 
-function orderCaptionLines(lines, page) {
-  const indexed = lines.map((line, index) => ({ ...line, originalIndex: index }))
-  const left = indexed
-    .filter((line) => lineColumn(line, page) === 0)
-    .sort((a, b) => b.y - a.y || a.x - b.x)
-  const right = indexed
-    .filter((line) => lineColumn(line, page) === 1)
-    .sort((a, b) => b.y - a.y || a.x - b.x)
-
-  return [...left, ...right]
-}
-
 function buildCaptionBlockFromStart(page, startLine) {
   const start = getCaptionStart(startLine.text)
   if (!start) return null
 
-  const topSlack = Math.max(12, page.height * 0.025)
-  const bottomLimit = page.height * 0.035
-  const maxCaptionTop = Math.min(startLine.y + topSlack, page.height * 0.42)
-  const minLineWidth = page.width * 0.08
-
-  const regionLines = page.lines.filter((line) => {
+  const candidateLines = page.lines.filter((line) => {
     if (looksLikeFooter(line, page)) return false
-    if (line.y < bottomLimit || line.y > maxCaptionTop) return false
-    if (line.xMax - line.x < minLineWidth && !getCaptionStart(line.text)) return false
-    if (line.y > startLine.y + topSlack && !getCaptionStart(line.text)) return false
     if (looksLikeSectionBoundary(line.text)) return false
     return true
   })
 
-  const laterCaptionStarts = regionLines
-    .filter((line) => line.y < startLine.y - 2 && getCaptionStart(line.text))
-    .sort((a, b) => b.y - a.y)
-  const nextStartY = laterCaptionStarts[0]?.y ?? -Infinity
+  const blocks = groupLinesIntoBlocks(candidateLines, page)
+  const anchorBlock = blocks.find((block) => block.lines.some((line) => line.id === startLine.id))
+  if (!anchorBlock) return null
 
-  const captionLines = regionLines.filter((line) => line.y > nextStartY + 1)
-  const orderedLines = orderCaptionLines(captionLines, page)
+  const layoutMode = getCaptionFlowMode(page, startLine)
+  const mergedBlocks =
+    layoutMode === 'multi-column' ? mergeCaptionCompanionBlocks(blocks, anchorBlock, page) : []
+  const orderedBlocks = orderCaptionBlocks(mergedBlocks, layoutMode)
+  const captionLines =
+    layoutMode === 'single-flow'
+      ? buildSingleFlowCaptionLines(page, startLine)
+      : orderedBlocks.flatMap((block) => block.lines)
   const seen = new Set()
   const text = normalizeWhitespace(
-    orderedLines
+    captionLines
       .filter((line) => {
         const key = `${Math.round(line.y)}:${Math.round(line.x)}:${line.text}`
         if (seen.has(key)) return false
@@ -369,14 +559,49 @@ function buildCaptionBlockFromStart(page, startLine) {
     figureNumber: start.figureNumber,
     pageNumber: page.pageNumber,
     text: text.slice(0, 5000),
+    startLineText: startLine.text,
+    lineCount: captionLines.length,
+    layoutMode,
     scoreRegion: {
       pageNumber: page.pageNumber,
-      topY: maxCaptionTop,
-      bottomY: bottomLimit,
+      topY:
+        layoutMode === 'single-flow'
+          ? Math.max(...captionLines.map((line) => line.y))
+          : Math.max(...mergedBlocks.map((block) => block.topY)),
+      bottomY:
+        layoutMode === 'single-flow'
+          ? Math.min(...captionLines.map((line) => line.y))
+          : Math.min(...mergedBlocks.map((block) => block.bottomY)),
       startY: startLine.y,
       lineIds: new Set(captionLines.map((line) => line.id)),
     },
   }
+}
+
+function scoreCaptionIntrinsic(block) {
+  let score = 0
+  const text = block.text
+
+  if (/^(?:Figure|Fig\.?)\s*\d+[A-Za-z]?\s*(?:[|.:)]|\s\|)/i.test(block.startLineText)) {
+    score += 20
+  }
+
+  const panelMatches = text.match(/\b[a-z],/g) ?? []
+  score += Math.min(8, panelMatches.length)
+
+  if (/\b(?:n\s*=|p\s*[<=>]|anova|tukey|scale bar|error bars|mean|s\.e\.m\.|95% ci)\b/i.test(text)) {
+    score += 4
+  }
+
+  if (block.lineCount >= 3) score += 3
+  if (text.length > 200) score += 3
+  if (text.length > 600) score += 2
+
+  if (/\b(?:supplementary|extended data)\s+(?:figure|fig\.?)/i.test(text)) {
+    score -= 10
+  }
+
+  return score
 }
 
 function extractCaptionBlocks(pages) {
@@ -402,7 +627,7 @@ function inferFigureNumberFromPage(pages, currentPage) {
   const captions = extractCaptionBlocks(pages)
   const currentCaptions = captions
     .filter((caption) => caption.pageNumber === currentPage)
-    .sort((a, b) => b.scoreRegion.startY - a.scoreRegion.startY)
+    .sort((a, b) => scoreCaptionIntrinsic(b) - scoreCaptionIntrinsic(a))
 
   if (currentCaptions[0]?.figureNumber) {
     return currentCaptions[0].figureNumber
@@ -416,9 +641,11 @@ function inferFigureNumberFromPage(pages, currentPage) {
     }))
     .filter((caption) => caption.distance <= 2)
     .sort((a, b) => {
+      const scoreDiff = scoreCaptionIntrinsic(b) - scoreCaptionIntrinsic(a)
+      if (scoreDiff !== 0) return scoreDiff
       if (a.distance !== b.distance) return a.distance - b.distance
       if (a.isPrevious !== b.isPrevious) return a.isPrevious ? -1 : 1
-      return b.scoreRegion.startY - a.scoreRegion.startY
+      return 0
     })
 
   if (nearbyCaptions[0]?.figureNumber) {
@@ -431,13 +658,9 @@ function inferFigureNumberFromPage(pages, currentPage) {
 }
 
 function scoreCaptionBlock(block, figureNumber, currentPage) {
-  let score = 0
+  let score = scoreCaptionIntrinsic(block)
   if (block.figureNumber === figureNumber) score += 30
   score += Math.max(0, 10 - Math.abs(block.pageNumber - currentPage) * 2)
-  if (block.scoreRegion.startY < 320) score += 4
-  if (block.text.length > 250) score += 3
-  if (block.text.length > 700) score += 2
-  if (block.text.includes('|')) score += 1
   return score
 }
 
@@ -457,24 +680,13 @@ function findCaptionCandidates(pages, figureNumber, currentPage) {
     .sort((a, b) => b.score - a.score)
 }
 
-function isCaptionLine(line, captionBlocks) {
-  return captionBlocks.some((block) => {
-    if (block.pageNumber !== line.pageNumber) return false
-    const region = block.scoreRegion
-    if (line.y < region.bottomY || line.y > region.topY) return false
-    return region.lineIds.has(line.id)
-  })
-}
-
-function snippetAroundLine(lines, lineIndex, radius = 2) {
-  const start = Math.max(0, lineIndex - radius)
-  const end = Math.min(lines.length, lineIndex + radius + 1)
-  return normalizeWhitespace(lines.slice(start, end).map((line) => line.text).join(' '))
-}
-
 function scoreBodyParagraph(paragraph, figureNumber, captionKeywords, captionPageNumbers) {
   const text = paragraph.text.toLowerCase()
   let score = 0
+
+  if (/\b(?:supplementary|extended data)\s+(?:figure|fig\.?)\s*/i.test(paragraph.text)) {
+    score -= 10
+  }
 
   if (new RegExp(`\\b(?:figure|fig\\.?)\\s*${figureNumber}[a-z]?\\b`, 'i').test(paragraph.text)) {
     score += 12
@@ -535,7 +747,7 @@ app.post('/api/pdf-inspect', async (req, res) => {
   const { pdf, currentPage } = req.body ?? {}
 
   if (!pdf || typeof pdf !== 'string') {
-    return res.status(400).json({ error: '缺少 PDF 数据。' })
+    return sendJsonError(res, 400, 'Missing PDF payload.')
   }
 
   try {
@@ -549,7 +761,7 @@ app.post('/api/pdf-inspect', async (req, res) => {
         figureLabel: null,
         captionCandidates: [],
         bodyEvidence: [],
-        note: '未自动识别到当前页相关的 figure 编号。',
+        note: 'No related figure number was detected for the current page.',
       })
     }
 
@@ -562,13 +774,15 @@ app.post('/api/pdf-inspect', async (req, res) => {
       bodyEvidence,
       note:
         captionCandidates.length > 0
-          ? '已按页面几何结构自动匹配当前 figure caption。'
-          : '已识别 figure 编号，但未找到明确 caption 候选。',
+          ? 'Caption candidates were matched from page geometry.'
+          : 'A figure number was detected, but no clear caption candidate was found.',
     })
   } catch (error) {
-    return res.status(500).json({
-      error: error instanceof Error ? error.message : 'PDF 检索失败。',
-    })
+    return sendJsonError(
+      res,
+      500,
+      error instanceof Error ? error.message : 'PDF inspection failed.',
+    )
   }
 })
 
@@ -576,28 +790,32 @@ app.post('/api/analyze-image', async (req, res) => {
   const { image, imageName, caption, question, selection } = req.body ?? {}
 
   if (!image || typeof image !== 'string') {
-    return res.status(400).json({ error: '缺少图片数据。请先上传图片、粘贴截图，或导入 PDF。' })
+    return sendJsonError(res, 400, 'Missing image payload. Upload an image or import a PDF first.')
   }
 
   if (!process.env.OPENAI_API_KEY) {
-    return res.status(503).json({
-      error: '未配置 OPENAI_API_KEY。当前不会返回模拟结果，请配置真实 API key 后重试。',
-    })
+    return sendJsonError(
+      res,
+      503,
+      'OPENAI_API_KEY is not configured. The app does not use mock responses.',
+    )
   }
 
   const regionText = selection
-    ? `用户选择了图片显示坐标区域：x=${Math.round(selection.x)}, y=${Math.round(selection.y)}, width=${Math.round(selection.width)}, height=${Math.round(selection.height)}。`
-    : '用户没有选择局部区域，请先分析整张图。'
+    ? `User selected image coordinates: x=${Math.round(selection.x)}, y=${Math.round(selection.y)}, width=${Math.round(selection.width)}, height=${Math.round(selection.height)}.`
+    : 'No local region was selected. Analyze the full figure.'
 
   const prompt = [
-    '你是科研论文图片理解助手。请帮助用户理解论文 figure。',
-    '回答必须严格区分：图片中可见信息、系统提供的图注或正文证据、以及你的推断。',
-    '先给短结论，再给依据和不确定点。不要编造图注、正文或实验条件。',
-    `图片名称：${imageName || '未命名图片'}`,
+    'You are an assistant for understanding scientific paper figures.',
+    'Separate visible image evidence, provided caption or body evidence, and your own inference.',
+    'Give a short conclusion first, then evidence and uncertainty. Do not invent caption details or experimental conditions.',
+    `Image name: ${imageName || 'unnamed-image'}`,
     regionText,
-    caption ? `系统自动检索到的图注或正文证据：\n${caption}` : '系统未检索到图注或正文证据。',
-    `用户问题：${question || '这张图主要说明什么？'}`,
-    '请用 JSON 返回，格式为 {"answer":"短结论","sources":["依据1","依据2"],"uncertainty":"不确定点"}。',
+    caption
+      ? `Retrieved caption or body evidence:\n${caption}`
+      : 'No caption or body evidence was retrieved.',
+    `User question: ${question || 'What does this figure mainly show?'}`,
+    'Return JSON with {"answer":"...","sources":["..."],"uncertainty":"..."}',
   ].join('\n\n')
 
   try {
@@ -628,10 +846,7 @@ app.post('/api/analyze-image', async (req, res) => {
               required: ['answer', 'sources', 'uncertainty'],
               properties: {
                 answer: { type: 'string' },
-                sources: {
-                  type: 'array',
-                  items: { type: 'string' },
-                },
+                sources: { type: 'array', items: { type: 'string' } },
                 uncertainty: { type: 'string' },
               },
             },
@@ -641,26 +856,63 @@ app.post('/api/analyze-image', async (req, res) => {
       }),
     })
 
-    const payload = await response.json()
+    const responseText = await response.text()
+    let payload = null
+
+    try {
+      payload = responseText ? JSON.parse(responseText) : null
+    } catch {
+      payload = null
+    }
+
     if (!response.ok) {
-      return res.status(response.status).json({
-        error: payload.error?.message || `多模态模型调用失败：${baseUrl}`,
-      })
+      const upstreamMessage =
+        payload?.error?.message ||
+        (responseText && responseText.trim().startsWith('<!DOCTYPE')
+          ? `Upstream service returned HTML instead of JSON. Status ${response.status}.`
+          : responseText?.slice(0, 500)) ||
+        `Multimodal request failed: ${baseUrl}`
+
+      return sendJsonError(res, response.status, upstreamMessage)
+    }
+
+    if (!payload) {
+      return sendJsonError(res, 502, 'Upstream service returned a non-JSON success response.')
     }
 
     const text = extractOutputText(payload)
     if (!text) {
-      return res.status(502).json({
-        error: '模型返回成功，但没有可解析的文本内容。',
-      })
+      return sendJsonError(res, 502, 'Model returned success but no parsable text content.')
     }
 
     return res.json(JSON.parse(text))
   } catch (error) {
-    return res.status(500).json({
-      error: formatNetworkError(error),
-    })
+    return sendJsonError(res, 500, formatNetworkError(error))
   }
+})
+
+app.use((error, _req, res, next) => {
+  if (res.headersSent) {
+    return next(error)
+  }
+
+  if (error?.type === 'entity.too.large') {
+    return sendJsonError(
+      res,
+      413,
+      'The uploaded request is too large. Try a smaller page image or reduce the PDF resolution.',
+    )
+  }
+
+  if (error instanceof SyntaxError && 'body' in error) {
+    return sendJsonError(res, 400, 'Invalid JSON request body.')
+  }
+
+  return sendJsonError(
+    res,
+    500,
+    error instanceof Error ? error.message : 'Unexpected server error.',
+  )
 })
 
 app.listen(port, () => {
