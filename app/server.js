@@ -680,6 +680,70 @@ function findCaptionCandidates(pages, figureNumber, currentPage) {
     .sort((a, b) => b.score - a.score)
 }
 
+function buildPaperFigureIndex(pages) {
+  const captionBlocks = extractCaptionBlocks(pages)
+  const figureNumbers = [
+    ...new Set(
+      captionBlocks
+        .map((block) => block.figureNumber)
+        .filter((figureNumber) => figureNumber && /^\d+$/.test(figureNumber)),
+    ),
+  ].sort((a, b) => Number(a) - Number(b))
+
+  return figureNumbers.map((figureNumber) => {
+    const captions = captionBlocks
+      .filter((block) => block.figureNumber === figureNumber)
+      .map((block) => ({
+        pageNumber: block.pageNumber,
+        text: block.text,
+        score: scoreCaptionBlock(block, figureNumber, block.pageNumber),
+        region: {
+          topY: Math.round(block.scoreRegion.topY),
+          bottomY: Math.round(block.scoreRegion.bottomY),
+          startY: Math.round(block.scoreRegion.startY),
+        },
+      }))
+      .sort((a, b) => b.score - a.score)
+
+    const bodyEvidence = findBodyEvidence(
+      pages,
+      figureNumber,
+      captionBlocks.filter((block) => block.figureNumber === figureNumber),
+    )
+
+    const pagesForFigure = [
+      ...new Set([
+        ...captions.map((caption) => caption.pageNumber),
+        ...bodyEvidence.map((evidence) => evidence.pageNumber),
+      ]),
+    ].sort((a, b) => a - b)
+
+    return {
+      figureLabel: figureNumber,
+      captionCandidates: captions.slice(0, 5),
+      bodyEvidence,
+      pages: pagesForFigure,
+      score: (captions[0]?.score ?? 0) + Math.min(bodyEvidence.length, 5),
+    }
+  })
+}
+
+function findBestFigureForPage(index, currentPage) {
+  const samePage = index
+    .filter((entry) => entry.captionCandidates.some((caption) => caption.pageNumber === currentPage))
+    .sort((a, b) => b.score - a.score)
+
+  if (samePage[0]) return samePage[0]
+
+  return [...index]
+    .map((entry) => ({
+      ...entry,
+      distance: Math.min(...entry.pages.map((pageNumber) => Math.abs(pageNumber - currentPage))),
+    }))
+    .filter((entry) => Number.isFinite(entry.distance))
+    .sort((a, b) => a.distance - b.distance || b.score - a.score)[0]
+}
+
 function scoreBodyParagraph(paragraph, figureNumber, captionKeywords, captionPageNumbers) {
   const text = paragraph.text.toLowerCase()
   let score = 0
@@ -782,6 +846,36 @@ app.post('/api/pdf-inspect', async (req, res) => {
       res,
       500,
       error instanceof Error ? error.message : 'PDF inspection failed.',
+    )
+  }
+})
+
+app.post('/api/pdf-index', async (req, res) => {
+  const { pdf, currentPage } = req.body ?? {}
+
+  if (!pdf || typeof pdf !== 'string') {
+    return sendJsonError(res, 400, 'Missing PDF payload.')
+  }
+
+  try {
+    const pages = await loadPdfTextPagesFromDataUrl(pdf)
+    const pageNumber = Number(currentPage) || 1
+    const figures = buildPaperFigureIndex(pages)
+    const currentFigure = findBestFigureForPage(figures, pageNumber)
+
+    return res.json({
+      figures,
+      currentFigureLabel: currentFigure?.figureLabel ?? null,
+      note:
+        figures.length > 0
+          ? `Indexed ${figures.length} figures from the paper.`
+          : 'No main figure captions were detected in the paper.',
+    })
+  } catch (error) {
+    return sendJsonError(
+      res,
+      500,
+      error instanceof Error ? error.message : 'PDF index failed.',
     )
   }
 })

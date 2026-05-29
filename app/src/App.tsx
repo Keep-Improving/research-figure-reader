@@ -37,6 +37,20 @@ type PdfInspectResult = {
   note: string
 }
 
+type FigureIndexEntry = {
+  figureLabel: string
+  captionCandidates: PdfEvidence[]
+  bodyEvidence: PdfEvidence[]
+  pages: number[]
+  score: number
+}
+
+type PdfIndexResult = {
+  figures: FigureIndexEntry[]
+  currentFigureLabel: string | null
+  note: string
+}
+
 type VisualSource = {
   name: string
   kind: 'image' | 'pdf'
@@ -66,6 +80,34 @@ function normalizeSelection(startX: number, startY: number, endX: number, endY: 
     width: Math.abs(endX - startX),
     height: Math.abs(endY - startY),
   }
+}
+
+function buildFigureContext(
+  caption: string,
+  selectedFigure: FigureIndexEntry | null,
+  bodyEvidenceList: PdfEvidence[],
+) {
+  const contextParts = []
+
+  if (selectedFigure) {
+    contextParts.push(`Selected figure: Figure ${selectedFigure.figureLabel}`)
+  }
+
+  const captionText = caption.trim() || selectedFigure?.captionCandidates[0]?.text.trim()
+  if (captionText) {
+    contextParts.push(`Caption:\n${captionText}`)
+  }
+
+  const bodyEvidenceText = bodyEvidenceList
+    .slice(0, 5)
+    .map((evidence, index) => `${index + 1}. Page ${evidence.pageNumber}: ${evidence.text}`)
+    .join('\n')
+
+  if (bodyEvidenceText) {
+    contextParts.push(`Related body evidence:\n${bodyEvidenceText}`)
+  }
+
+  return contextParts.join('\n\n')
 }
 
 async function fileToDataUrl(file: File): Promise<string> {
@@ -102,29 +144,23 @@ async function renderPdfPage(documentProxy: PDFDocumentProxy, pageNumber: number
 async function parseApiResponse(response: Response) {
   const rawText = await response.text()
   const contentType = response.headers.get('content-type') || ''
-  const isJson = contentType.includes('application/json')
 
-  if (isJson) {
+  if (contentType.includes('application/json')) {
     try {
       return {
         ok: response.ok,
-        status: response.status,
         payload: rawText ? JSON.parse(rawText) : null,
       }
     } catch {
       return {
         ok: false,
-        status: response.status,
-        payload: {
-          error: '接口返回了 JSON 响应头，但内容不是合法 JSON。',
-        },
+        payload: { error: '接口返回了 JSON 响应头，但内容不是合法 JSON。' },
       }
     }
   }
 
   return {
     ok: false,
-    status: response.status,
     payload: {
       error: rawText.trim().startsWith('<!DOCTYPE')
         ? `接口返回了 HTML 页面，不是 JSON。状态码 ${response.status}。`
@@ -145,11 +181,15 @@ function App() {
   const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null)
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [pdfInspect, setPdfInspect] = useState<PdfInspectResult | null>(null)
+  const [pdfIndex, setPdfIndex] = useState<PdfIndexResult | null>(null)
+  const [figureQuery, setFigureQuery] = useState('')
+  const [selectedFigureLabel, setSelectedFigureLabel] = useState<string | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
   const [status, setStatus] = useState('等待导入图片、PDF，或直接粘贴截图')
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [isLoadingFile, setIsLoadingFile] = useState(false)
   const [isInspectingPdf, setIsInspectingPdf] = useState(false)
+  const [isIndexingPdf, setIsIndexingPdf] = useState(false)
   const [pageInput, setPageInput] = useState('1')
 
   const resetView = () => {
@@ -160,12 +200,19 @@ function App() {
     setPdfInspect(null)
   }
 
+  const clearPdfContext = () => {
+    setPdfIndex(null)
+    setSelectedFigureLabel(null)
+    setFigureQuery('')
+    setCaption('')
+    lastInspectedRef.current = ''
+  }
+
   const setImageVisual = async (file: File) => {
     const dataUrl = await fileToDataUrl(file)
     setPdfState(null)
     setPageInput('1')
-    setCaption('')
-    lastInspectedRef.current = ''
+    clearPdfContext()
     setVisual({
       name: file.name || 'clipboard-image',
       kind: 'image',
@@ -205,8 +252,7 @@ function App() {
     const bytes = new Uint8Array(await file.arrayBuffer())
     const loadingTask = getDocument({ data: bytes })
     const documentProxy = await loadingTask.promise
-    setCaption('')
-    lastInspectedRef.current = ''
+    clearPdfContext()
     await renderAndSetPdfPage(
       documentProxy,
       1,
@@ -282,7 +328,9 @@ function App() {
         }
 
         setPdfInspect(payload)
-        setCaption(payload.captionCandidates?.[0]?.text ?? '')
+        if (!selectedFigureLabel) {
+          setCaption(payload.captionCandidates?.[0]?.text ?? '')
+        }
         setStatus(payload.note || '已完成自动 caption 匹配')
       } catch (error) {
         const message = error instanceof Error ? error.message : 'PDF 检索失败'
@@ -294,7 +342,47 @@ function App() {
     }
 
     void inspectPdfContext()
-  }, [pdfState, visual])
+  }, [pdfState, selectedFigureLabel, visual])
+
+  useEffect(() => {
+    if (!visual?.originalDataUrl || !pdfState || pdfIndex) return
+
+    const indexPdf = async () => {
+      setIsIndexingPdf(true)
+      setStatus('正在建立全文 figure 图谱')
+
+      try {
+        const response = await fetch('/api/pdf-index', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pdf: visual.originalDataUrl,
+            currentPage: pdfState.currentPage,
+          }),
+        })
+
+        const { ok, payload } = await parseApiResponse(response)
+        if (!ok) {
+          throw new Error(payload?.error || 'PDF 全文索引失败')
+        }
+
+        setPdfIndex(payload)
+        const initialLabel = payload.currentFigureLabel ?? payload.figures?.[0]?.figureLabel ?? null
+        setSelectedFigureLabel(initialLabel)
+        const initialFigure = payload.figures?.find((entry: FigureIndexEntry) => entry.figureLabel === initialLabel)
+        setCaption(initialFigure?.captionCandidates?.[0]?.text ?? '')
+        setStatus(payload.note || '已建立全文 figure 图谱')
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'PDF 全文索引失败'
+        setErrorMessage(message)
+        setStatus(message)
+      } finally {
+        setIsIndexingPdf(false)
+      }
+    }
+
+    void indexPdf()
+  }, [pdfIndex, pdfState, visual?.originalDataUrl])
 
   const pointerToImagePosition = (event: PointerEvent<HTMLDivElement>) => {
     const img = imageRef.current
@@ -396,7 +484,7 @@ function App() {
         body: JSON.stringify({
           image: visual.dataUrl,
           imageName: pdfState ? `${visual.name} page ${pdfState.currentPage}` : visual.name,
-          caption,
+          caption: buildFigureContext(caption, selectedFigure, bodyEvidenceList),
           question,
           selection,
         }),
@@ -419,8 +507,24 @@ function App() {
   }
 
   const activeSelection = draftSelection ?? selection
-  const topCaption = pdfInspect?.captionCandidates[0]
-  const topBodyEvidence = pdfInspect?.bodyEvidence[0]
+  const filteredFigures =
+    pdfIndex?.figures.filter((item) => {
+      const query = figureQuery.trim().toLowerCase()
+      if (!query) return true
+      return (
+        item.figureLabel.toLowerCase().includes(query) ||
+        item.captionCandidates.some((candidate) => candidate.text.toLowerCase().includes(query)) ||
+        item.bodyEvidence.some((evidence) => evidence.text.toLowerCase().includes(query))
+      )
+    }) ?? []
+  const selectedFigure =
+    filteredFigures.find((item) => item.figureLabel === selectedFigureLabel) ??
+    pdfIndex?.figures.find((item) => item.figureLabel === selectedFigureLabel) ??
+    filteredFigures[0] ??
+    null
+  const topCaption = selectedFigure?.captionCandidates[0] ?? pdfInspect?.captionCandidates[0]
+  const topBodyEvidence = selectedFigure?.bodyEvidence[0] ?? pdfInspect?.bodyEvidence[0]
+  const bodyEvidenceList = selectedFigure?.bodyEvidence ?? pdfInspect?.bodyEvidence ?? []
 
   return (
     <main className="app-shell">
@@ -521,7 +625,7 @@ function App() {
             ) : (
               <div className="empty-state">
                 <strong>上传图片、上传 PDF，或直接粘贴论文截图</strong>
-                <span>PDF 会在后台自动匹配当前页相关的 figure caption。</span>
+                <span>PDF 会先建立全文 figure 图谱，再把图注和正文证据用于分析。</span>
               </div>
             )}
           </div>
@@ -529,13 +633,46 @@ function App() {
       </section>
 
       <aside className="inspector">
+        {pdfIndex ? (
+          <div className="panel">
+            <h2>全文图谱</h2>
+            {isIndexingPdf ? <p className="muted">正在索引全文。</p> : null}
+            <input
+              className="figure-search"
+              value={figureQuery}
+              onChange={(event) => setFigureQuery(event.target.value)}
+              placeholder="搜索 figure、caption 或正文"
+            />
+            <div className="figure-index-list">
+              {filteredFigures.map((item) => (
+                <button
+                  key={item.figureLabel}
+                  type="button"
+                  className={
+                    item.figureLabel === selectedFigure?.figureLabel
+                      ? 'figure-index-item active'
+                      : 'figure-index-item'
+                  }
+                  onClick={() => {
+                    setSelectedFigureLabel(item.figureLabel)
+                    setCaption(item.captionCandidates[0]?.text ?? '')
+                  }}
+                >
+                  <strong>Figure {item.figureLabel}</strong>
+                  <span>{item.captionCandidates[0]?.text.slice(0, 130) || '未找到 caption'}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         {pdfState ? (
           <div className="panel">
             <h2>自动证据</h2>
             {isInspectingPdf ? <p className="muted">正在自动匹配图注和正文引用。</p> : null}
-            {pdfInspect ? (
+            {selectedFigure || pdfInspect ? (
               <div className="evidence-list">
-                <p className="muted">Figure：{pdfInspect.figureLabel ?? '未识别'}</p>
+                <p className="muted">Figure：{selectedFigure?.figureLabel ?? pdfInspect?.figureLabel ?? '未识别'}</p>
                 {topCaption ? (
                   <div className="evidence-card">
                     <strong>匹配到的 caption</strong>
@@ -556,9 +693,9 @@ function App() {
                     <p>{topBodyEvidence.text}</p>
                   </div>
                 ) : null}
-                {pdfInspect.bodyEvidence.length > 1 ? (
+                {bodyEvidenceList.length > 1 ? (
                   <div className="evidence-list">
-                    {pdfInspect.bodyEvidence.slice(1).map((item) => (
+                    {bodyEvidenceList.slice(1).map((item) => (
                       <div key={`${item.pageNumber}-${item.text.slice(0, 24)}`} className="evidence-card">
                         <strong>更多正文引用</strong>
                         <p>
@@ -593,7 +730,7 @@ function App() {
             <textarea
               value={caption}
               onChange={(event) => setCaption(event.target.value)}
-              placeholder="自动匹配到的 figure caption 会出现在这里，也可以手动补充正文"
+              placeholder="选中 figure 的 caption 会出现在这里，也可以手动修正"
             />
             <button type="submit" disabled={isAnalyzing || isLoadingFile || !visual}>
               {isLoadingFile ? '加载中' : isAnalyzing ? '解析中' : '解析内容'}
