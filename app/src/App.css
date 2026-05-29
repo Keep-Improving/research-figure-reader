@@ -252,10 +252,10 @@
 
 .annotation-tooltip {
   position: absolute;
-  left: min(100%, calc(100vw - 360px));
+  left: calc(100% + 8px);
   top: 0;
   display: none;
-  width: 270px;
+  width: 230px;
   gap: 5px;
   border: 1px solid #c9d5db;
   border-radius: 6px;
@@ -280,6 +280,10 @@
 .annotation-tooltip span {
   font-size: 13px;
   line-height: 1.35;
+}
+
+.annotation-tooltip span {
+  overflow-wrap: anywhere;
 }
 
 .source-chip {

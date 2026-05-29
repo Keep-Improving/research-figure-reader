@@ -901,18 +901,19 @@ app.post('/api/analyze-image', async (req, res) => {
 
   const prompt = [
     'You are an assistant for understanding scientific paper figures.',
+    'Write all user-facing output in Simplified Chinese. Keep established gene, protein, method, and statistical abbreviations in English when needed.',
     'Separate visible image evidence, provided caption or body evidence, and your own inference.',
     'Give a short conclusion first, then evidence and uncertainty. Do not invent caption details or experimental conditions.',
     'Also create concise on-image annotations that help a reader quickly understand the figure.',
     'Use normalized image coordinates from 0 to 1000 for each annotation box. If the user selected a local region, place annotation boxes within that selected region coordinate space as visible in the provided image.',
-    'Each annotation popup must be short: what it is, how to read it, and what it means.',
+    'Each annotation popup must be short Chinese text: what it is, how to read it, and what it means.',
     `Image name: ${imageName || 'unnamed-image'}`,
     regionText,
     caption
       ? `Retrieved caption or body evidence:\n${caption}`
       : 'No caption or body evidence was retrieved.',
     `User question: ${question || 'What does this figure mainly show?'}`,
-    'Return JSON with {"answer":"...","sources":["..."],"uncertainty":"...","annotations":[...]}',
+    'Return JSON with {"answer":"中文短结论","sources":["中文依据"],"uncertainty":"中文不确定点","annotations":[...]}',
   ].join('\n\n')
 
   try {
