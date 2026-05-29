@@ -13,10 +13,21 @@ type Selection = {
   height: number
 }
 
+type FigureAnnotation = {
+  label: string
+  what: string
+  howToRead: string
+  meaning: string
+  bbox: Selection
+  confidence: number
+  evidenceType: 'visible' | 'caption' | 'body' | 'inference' | 'uncertain'
+}
+
 type AnalysisResult = {
   answer: string
   sources: string[]
   uncertainty: string
+  annotations: FigureAnnotation[]
 }
 
 type PdfEvidence = {
@@ -110,6 +121,15 @@ function buildFigureContext(
   return contextParts.join('\n\n')
 }
 
+function clampAnnotationBox(box: Selection) {
+  const x = Math.max(0, Math.min(1000, Number(box.x) || 0))
+  const y = Math.max(0, Math.min(1000, Number(box.y) || 0))
+  const width = Math.max(1, Math.min(1000 - x, Number(box.width) || 1))
+  const height = Math.max(1, Math.min(1000 - y, Number(box.height) || 1))
+
+  return { x, y, width, height }
+}
+
 async function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -184,6 +204,7 @@ function App() {
   const [pdfIndex, setPdfIndex] = useState<PdfIndexResult | null>(null)
   const [figureQuery, setFigureQuery] = useState('')
   const [selectedFigureLabel, setSelectedFigureLabel] = useState<string | null>(null)
+  const [activeAnnotationIndex, setActiveAnnotationIndex] = useState<number | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
   const [status, setStatus] = useState('等待导入图片、PDF，或直接粘贴截图')
   const [isAnalyzing, setIsAnalyzing] = useState(false)
@@ -196,6 +217,7 @@ function App() {
     setSelection(null)
     setDraftSelection(null)
     setResult(null)
+    setActiveAnnotationIndex(null)
     setErrorMessage('')
     setPdfInspect(null)
   }
@@ -474,6 +496,7 @@ function App() {
 
     setIsAnalyzing(true)
     setResult(null)
+    setActiveAnnotationIndex(null)
     setErrorMessage('')
     setStatus('正在调用真实多模态解析接口')
 
@@ -525,6 +548,7 @@ function App() {
   const topCaption = selectedFigure?.captionCandidates[0] ?? pdfInspect?.captionCandidates[0]
   const topBodyEvidence = selectedFigure?.bodyEvidence[0] ?? pdfInspect?.bodyEvidence[0]
   const bodyEvidenceList = selectedFigure?.bodyEvidence ?? pdfInspect?.bodyEvidence ?? []
+  const annotations = result?.annotations ?? []
 
   return (
     <main className="app-shell">
@@ -610,6 +634,37 @@ function App() {
               <>
                 <img ref={imageRef} src={visual.dataUrl} alt={visual.name} draggable={false} />
                 {pdfState ? <div className="source-chip">PDF 第 {pdfState.currentPage} 页预览</div> : null}
+                {annotations.map((annotation, index) => {
+                  const box = clampAnnotationBox(annotation.bbox)
+                  const isActive = activeAnnotationIndex === index
+
+                  return (
+                    <button
+                      key={`${annotation.label}-${index}`}
+                      type="button"
+                      className={isActive ? 'annotation-box active' : 'annotation-box'}
+                      style={{
+                        left: `${box.x / 10}%`,
+                        top: `${box.y / 10}%`,
+                        width: `${box.width / 10}%`,
+                        height: `${box.height / 10}%`,
+                      }}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setActiveAnnotationIndex(isActive ? null : index)
+                      }}
+                      onPointerDown={(event) => event.stopPropagation()}
+                    >
+                      <span className="annotation-number">{index + 1}</span>
+                      <span className="annotation-tooltip">
+                        <strong>{annotation.label}</strong>
+                        <span>看什么：{annotation.what}</span>
+                        <span>怎么看：{annotation.howToRead}</span>
+                        <span>说明：{annotation.meaning}</span>
+                      </span>
+                    </button>
+                  )
+                })}
                 {activeSelection ? (
                   <div
                     className="selection-box"
@@ -746,6 +801,35 @@ function App() {
                 <h3>短结论</h3>
                 <p>{result.answer}</p>
               </section>
+              {annotations.length > 0 ? (
+                <section>
+                  <h3>图上标注</h3>
+                  <div className="annotation-list">
+                    {annotations.map((annotation, index) => (
+                      <button
+                        key={`${annotation.label}-detail-${index}`}
+                        type="button"
+                        className={
+                          activeAnnotationIndex === index
+                            ? 'annotation-detail active'
+                            : 'annotation-detail'
+                        }
+                        onClick={() => setActiveAnnotationIndex(index)}
+                      >
+                        <strong>
+                          {index + 1}. {annotation.label}
+                        </strong>
+                        <span>看什么：{annotation.what}</span>
+                        <span>怎么看：{annotation.howToRead}</span>
+                        <span>说明：{annotation.meaning}</span>
+                        <small>
+                          {annotation.evidenceType} · {Math.round(annotation.confidence * 100)}%
+                        </small>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
               <section>
                 <h3>依据</h3>
                 <ul>

@@ -208,6 +208,80 @@
   pointer-events: none;
 }
 
+.annotation-box {
+  position: absolute;
+  display: block;
+  min-width: 28px;
+  min-height: 28px;
+  border: 2px solid #d64c2f;
+  border-radius: 5px;
+  padding: 0;
+  background: rgba(214, 76, 47, 0.08);
+  color: #ffffff;
+  cursor: pointer;
+  z-index: 3;
+}
+
+.annotation-box.active,
+.annotation-box:hover {
+  border-color: #0f7b61;
+  background: rgba(15, 123, 97, 0.14);
+}
+
+.annotation-number {
+  position: absolute;
+  top: -12px;
+  left: -12px;
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  border-radius: 999px;
+  background: #d64c2f;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 2px 8px rgba(23, 32, 38, 0.22);
+}
+
+.annotation-box.active .annotation-number,
+.annotation-box:hover .annotation-number {
+  background: #0f7b61;
+}
+
+.annotation-tooltip {
+  position: absolute;
+  left: min(100%, calc(100vw - 360px));
+  top: 0;
+  display: none;
+  width: 270px;
+  gap: 5px;
+  border: 1px solid #c9d5db;
+  border-radius: 6px;
+  padding: 10px;
+  background: #ffffff;
+  color: #172026;
+  text-align: left;
+  box-shadow: 0 10px 28px rgba(23, 32, 38, 0.2);
+  pointer-events: none;
+}
+
+.annotation-box.active .annotation-tooltip,
+.annotation-box:hover .annotation-tooltip {
+  display: grid;
+}
+
+.annotation-tooltip strong {
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.annotation-tooltip span {
+  font-size: 13px;
+  line-height: 1.35;
+}
+
 .source-chip {
   position: absolute;
   top: 30px;
@@ -325,6 +399,49 @@ button:disabled {
 .result-panel ul {
   margin: 0;
   padding-left: 18px;
+}
+
+.annotation-list {
+  display: grid;
+  gap: 8px;
+}
+
+.annotation-detail {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  border: 1px solid #dce3e7;
+  border-radius: 6px;
+  padding: 10px;
+  background: #f9fbfc;
+  color: #172026;
+  text-align: left;
+  cursor: pointer;
+}
+
+.annotation-detail.active {
+  border-color: #0f7b61;
+  background: #effaf6;
+}
+
+.annotation-detail strong,
+.annotation-detail span,
+.annotation-detail small {
+  display: block;
+}
+
+.annotation-detail strong {
+  font-size: 14px;
+}
+
+.annotation-detail span {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.annotation-detail small {
+  color: #6c7a83;
+  font-size: 12px;
 }
 
 .error-box {

@@ -903,13 +903,16 @@ app.post('/api/analyze-image', async (req, res) => {
     'You are an assistant for understanding scientific paper figures.',
     'Separate visible image evidence, provided caption or body evidence, and your own inference.',
     'Give a short conclusion first, then evidence and uncertainty. Do not invent caption details or experimental conditions.',
+    'Also create concise on-image annotations that help a reader quickly understand the figure.',
+    'Use normalized image coordinates from 0 to 1000 for each annotation box. If the user selected a local region, place annotation boxes within that selected region coordinate space as visible in the provided image.',
+    'Each annotation popup must be short: what it is, how to read it, and what it means.',
     `Image name: ${imageName || 'unnamed-image'}`,
     regionText,
     caption
       ? `Retrieved caption or body evidence:\n${caption}`
       : 'No caption or body evidence was retrieved.',
     `User question: ${question || 'What does this figure mainly show?'}`,
-    'Return JSON with {"answer":"...","sources":["..."],"uncertainty":"..."}',
+    'Return JSON with {"answer":"...","sources":["..."],"uncertainty":"...","annotations":[...]}',
   ].join('\n\n')
 
   try {
@@ -937,11 +940,50 @@ app.post('/api/analyze-image', async (req, res) => {
             schema: {
               type: 'object',
               additionalProperties: false,
-              required: ['answer', 'sources', 'uncertainty'],
+              required: ['answer', 'sources', 'uncertainty', 'annotations'],
               properties: {
                 answer: { type: 'string' },
                 sources: { type: 'array', items: { type: 'string' } },
                 uncertainty: { type: 'string' },
+                annotations: {
+                  type: 'array',
+                  maxItems: 8,
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: [
+                      'label',
+                      'what',
+                      'howToRead',
+                      'meaning',
+                      'bbox',
+                      'confidence',
+                      'evidenceType',
+                    ],
+                    properties: {
+                      label: { type: 'string' },
+                      what: { type: 'string' },
+                      howToRead: { type: 'string' },
+                      meaning: { type: 'string' },
+                      bbox: {
+                        type: 'object',
+                        additionalProperties: false,
+                        required: ['x', 'y', 'width', 'height'],
+                        properties: {
+                          x: { type: 'number', minimum: 0, maximum: 1000 },
+                          y: { type: 'number', minimum: 0, maximum: 1000 },
+                          width: { type: 'number', minimum: 1, maximum: 1000 },
+                          height: { type: 'number', minimum: 1, maximum: 1000 },
+                        },
+                      },
+                      confidence: { type: 'number', minimum: 0, maximum: 1 },
+                      evidenceType: {
+                        type: 'string',
+                        enum: ['visible', 'caption', 'body', 'inference', 'uncertain'],
+                      },
+                    },
+                  },
+                },
               },
             },
             strict: true,
