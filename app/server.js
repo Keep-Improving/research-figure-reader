@@ -337,6 +337,70 @@ function buildSingleFlowCaptionLines(page, startLine) {
   return captionRows.flatMap((row) => row.lines.sort((a, b) => a.x - b.x))
 }
 
+function buildCaptionColumnLines(page, startLine, column) {
+  const lines = page.lines
+    .filter((line) => lineColumn(line, page) === column)
+    .filter((line) => line.y <= startLine.y + 2)
+    .filter((line) => !looksLikeFooter(line, page))
+    .filter((line) => !looksLikeStandaloneUrl(line.text))
+    .filter((line) => !looksLikeSectionBoundary(line.text))
+    .sort((a, b) => b.y - a.y || a.x - b.x)
+
+  const startIndex =
+    column === lineColumn(startLine, page)
+      ? lines.findIndex((line) => line.id === startLine.id)
+      : lines.findIndex(
+          (line) =>
+            line.y <= startLine.y + 2 &&
+            line.y >= startLine.y - Math.max(24, startLine.height * 2.4),
+        )
+
+  if (startIndex < 0) return []
+
+  const captionLines = []
+  let previous = lines[startIndex]
+
+  for (let index = startIndex; index < lines.length; index += 1) {
+    const line = lines[index]
+    const gap = previous.y - line.y
+
+    if (index > startIndex && gap > Math.max(15, Math.max(previous.height, line.height) * 1.45 + 3)) {
+      break
+    }
+
+    if (index > startIndex && getCaptionStart(line.text)) break
+
+    captionLines.push(line)
+    previous = line
+  }
+
+  return captionLines
+}
+
+function buildMultiColumnCaptionLines(page, startLine) {
+  const startColumn = lineColumn(startLine, page)
+  const otherColumn = startColumn === 0 ? 1 : 0
+  const startColumnLines = buildCaptionColumnLines(page, startLine, startColumn)
+  const companionLines = buildCaptionColumnLines(page, startLine, otherColumn)
+
+  if (companionLines.length === 0) return startColumnLines
+
+  const startColumnBottom = Math.min(...startColumnLines.map((line) => line.y))
+  const companionTop = Math.max(...companionLines.map((line) => line.y))
+  const companionStartsNearCaption =
+    companionTop <= startLine.y + 3 &&
+    companionTop >= startLine.y - Math.max(32, startLine.height * 3)
+  const companionNotBodyBelow = companionTop >= startColumnBottom - Math.max(12, startLine.height * 1.4)
+
+  if (!companionStartsNearCaption || !companionNotBodyBelow) {
+    return startColumnLines
+  }
+
+  return startColumn === 0
+    ? [...startColumnLines, ...companionLines]
+    : [...companionLines, ...startColumnLines]
+}
+
 async function loadPdfTextPagesFromDataUrl(pdfDataUrl) {
   const base64 = pdfDataUrl.split(',')[1]
   const bytes = Uint8Array.from(Buffer.from(base64, 'base64'))
@@ -534,11 +598,10 @@ function buildCaptionBlockFromStart(page, startLine) {
   const layoutMode = getCaptionFlowMode(page, startLine)
   const mergedBlocks =
     layoutMode === 'multi-column' ? mergeCaptionCompanionBlocks(blocks, anchorBlock, page) : []
-  const orderedBlocks = orderCaptionBlocks(mergedBlocks, layoutMode)
   const captionLines =
     layoutMode === 'single-flow'
       ? buildSingleFlowCaptionLines(page, startLine)
-      : orderedBlocks.flatMap((block) => block.lines)
+      : buildMultiColumnCaptionLines(page, startLine)
   const seen = new Set()
   const text = normalizeWhitespace(
     captionLines
@@ -567,11 +630,11 @@ function buildCaptionBlockFromStart(page, startLine) {
       topY:
         layoutMode === 'single-flow'
           ? Math.max(...captionLines.map((line) => line.y))
-          : Math.max(...mergedBlocks.map((block) => block.topY)),
+          : Math.max(...captionLines.map((line) => line.y)),
       bottomY:
         layoutMode === 'single-flow'
           ? Math.min(...captionLines.map((line) => line.y))
-          : Math.min(...mergedBlocks.map((block) => block.bottomY)),
+          : Math.min(...captionLines.map((line) => line.y)),
       startY: startLine.y,
       lineIds: new Set(captionLines.map((line) => line.id)),
     },
@@ -905,7 +968,11 @@ app.post('/api/analyze-image', async (req, res) => {
     'Separate visible image evidence, provided caption or body evidence, and your own inference.',
     'Give a short conclusion first, then evidence and uncertainty. Do not invent caption details or experimental conditions.',
     'Also create concise on-image annotations that help a reader quickly understand the figure.',
-    'Use normalized image coordinates from 0 to 1000 for each annotation box. If the user selected a local region, place annotation boxes within that selected region coordinate space as visible in the provided image.',
+    'Use normalized image coordinates from 0 to 1000 for each annotation box, where x=0,y=0 is the top-left of the visible image and x=1000,y=1000 is the bottom-right of the visible image.',
+    'Annotation boxes must be tight. Do not cover neighboring panels, figure captions, body text, page headers, or blank margins unless the user explicitly asks about them.',
+    'One annotation should correspond to one panel or one visual element inside a panel. Prefer the visible panel boundaries and panel letters (a, b, c...) when they exist.',
+    'If you cannot localize a panel precisely, return a smaller box around the most relevant visible data region instead of a large approximate box.',
+    'If the user selected a local region, place annotation boxes within that selected region coordinate space as visible in the provided image.',
     'Each annotation popup must be short Chinese text: what it is, how to read it, and what it means.',
     `Image name: ${imageName || 'unnamed-image'}`,
     regionText,

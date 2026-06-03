@@ -23,6 +23,17 @@ type FigureAnnotation = {
   evidenceType: 'visible' | 'caption' | 'body' | 'inference' | 'uncertain'
 }
 
+type AnnotationDragState = {
+  index: number
+  mode: 'move' | 'resize'
+  pointerId: number
+  startClientX: number
+  startClientY: number
+  startBox: Selection
+  imageWidth: number
+  imageHeight: number
+}
+
 type AnalysisResult = {
   answer: string
   sources: string[]
@@ -130,6 +141,30 @@ function clampAnnotationBox(box: Selection) {
   return { x, y, width, height }
 }
 
+function adjustAnnotationBox(
+  box: Selection,
+  dragState: AnnotationDragState,
+  clientX: number,
+  clientY: number,
+) {
+  const dx = ((clientX - dragState.startClientX) / dragState.imageWidth) * 1000
+  const dy = ((clientY - dragState.startClientY) / dragState.imageHeight) * 1000
+
+  if (dragState.mode === 'move') {
+    return clampAnnotationBox({
+      ...box,
+      x: dragState.startBox.x + dx,
+      y: dragState.startBox.y + dy,
+    })
+  }
+
+  return clampAnnotationBox({
+    ...box,
+    width: dragState.startBox.width + dx,
+    height: dragState.startBox.height + dy,
+  })
+}
+
 async function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -152,11 +187,27 @@ async function renderPdfPage(documentProxy: PDFDocumentProxy, pageNumber: number
   canvas.width = Math.ceil(viewport.width)
   canvas.height = Math.ceil(viewport.height)
 
-  await page.render({
-    canvas,
-    canvasContext: context,
-    viewport,
-  }).promise
+  try {
+    await page.render({
+      canvas,
+      canvasContext: context,
+      viewport,
+    }).promise
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'PDF page render failed'
+    context.fillStyle = '#ffffff'
+    context.fillRect(0, 0, canvas.width, canvas.height)
+    context.strokeStyle = '#dce3e7'
+    context.lineWidth = 2
+    context.strokeRect(24, 24, canvas.width - 48, canvas.height - 48)
+    context.fillStyle = '#172026'
+    context.font = 'bold 28px sans-serif'
+    context.fillText(`PDF 第 ${pageNumber} 页预览失败`, 56, 90)
+    context.fillStyle = '#64717a'
+    context.font = '18px sans-serif'
+    context.fillText('该页可能触发了 PDF 渲染兼容问题，但全文索引和翻页仍可继续。', 56, 130)
+    context.fillText(message.slice(0, 90), 56, 165)
+  }
 
   return canvas.toDataURL('image/png')
 }
@@ -205,6 +256,7 @@ function App() {
   const [figureQuery, setFigureQuery] = useState('')
   const [selectedFigureLabel, setSelectedFigureLabel] = useState<string | null>(null)
   const [activeAnnotationIndex, setActiveAnnotationIndex] = useState<number | null>(null)
+  const [annotationDrag, setAnnotationDrag] = useState<AnnotationDragState | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
   const [status, setStatus] = useState('等待导入图片、PDF，或直接粘贴截图')
   const [isAnalyzing, setIsAnalyzing] = useState(false)
@@ -218,6 +270,7 @@ function App() {
     setDraftSelection(null)
     setResult(null)
     setActiveAnnotationIndex(null)
+    setAnnotationDrag(null)
     setErrorMessage('')
     setPdfInspect(null)
   }
@@ -442,6 +495,64 @@ function App() {
     setDraftSelection(null)
   }
 
+  const updateAnnotationBox = (index: number, bbox: Selection) => {
+    setResult((current) => {
+      if (!current) return current
+
+      return {
+        ...current,
+        annotations: current.annotations.map((annotation, annotationIndex) =>
+          annotationIndex === index ? { ...annotation, bbox } : annotation,
+        ),
+      }
+    })
+  }
+
+  const startAnnotationDrag = (
+    event: PointerEvent<HTMLElement>,
+    index: number,
+    mode: 'move' | 'resize',
+  ) => {
+    const img = imageRef.current
+    const annotation = annotations[index]
+    if (!img || !annotation) return
+
+    const rect = img.getBoundingClientRect()
+    const startBox = clampAnnotationBox(annotation.bbox)
+
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setActiveAnnotationIndex(index)
+    setAnnotationDrag({
+      index,
+      mode,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startBox,
+      imageWidth: rect.width,
+      imageHeight: rect.height,
+    })
+  }
+
+  const moveAnnotationDrag = (event: PointerEvent<HTMLElement>) => {
+    if (!annotationDrag || event.pointerId !== annotationDrag.pointerId) return
+    const nextBox = adjustAnnotationBox(
+      annotationDrag.startBox,
+      annotationDrag,
+      event.clientX,
+      event.clientY,
+    )
+    updateAnnotationBox(annotationDrag.index, nextBox)
+  }
+
+  const endAnnotationDrag = (event: PointerEvent<HTMLElement>) => {
+    if (!annotationDrag || event.pointerId !== annotationDrag.pointerId) return
+    event.currentTarget.releasePointerCapture(event.pointerId)
+    setAnnotationDrag(null)
+  }
+
   const goToPdfPage = async (pageNumber: number) => {
     if (!pdfState || !visual?.originalDataUrl) return
 
@@ -497,6 +608,7 @@ function App() {
     setIsAnalyzing(true)
     setResult(null)
     setActiveAnnotationIndex(null)
+    setAnnotationDrag(null)
     setErrorMessage('')
     setStatus('正在调用真实多模态解析接口')
 
@@ -631,7 +743,7 @@ function App() {
             onPointerUp={handlePointerUp}
           >
             {visual ? (
-              <>
+              <div className="image-layer">
                 <img ref={imageRef} src={visual.dataUrl} alt={visual.name} draggable={false} />
                 {pdfState ? <div className="source-chip">PDF 第 {pdfState.currentPage} 页预览</div> : null}
                 {annotations.map((annotation, index) => {
@@ -653,7 +765,10 @@ function App() {
                         event.stopPropagation()
                         setActiveAnnotationIndex(isActive ? null : index)
                       }}
-                      onPointerDown={(event) => event.stopPropagation()}
+                      onPointerDown={(event) => startAnnotationDrag(event, index, 'move')}
+                      onPointerMove={moveAnnotationDrag}
+                      onPointerUp={endAnnotationDrag}
+                      onPointerCancel={endAnnotationDrag}
                     >
                       <span className="annotation-number">{index + 1}</span>
                       <span className="annotation-tooltip">
@@ -662,6 +777,10 @@ function App() {
                         <span>怎么看：{annotation.howToRead}</span>
                         <span>说明：{annotation.meaning}</span>
                       </span>
+                      <span
+                        className="annotation-resize-handle"
+                        onPointerDown={(event) => startAnnotationDrag(event, index, 'resize')}
+                      />
                     </button>
                   )
                 })}
@@ -676,7 +795,7 @@ function App() {
                     }}
                   />
                 ) : null}
-              </>
+              </div>
             ) : (
               <div className="empty-state">
                 <strong>上传图片、上传 PDF，或直接粘贴论文截图</strong>
