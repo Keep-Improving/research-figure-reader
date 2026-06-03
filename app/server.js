@@ -35,17 +35,51 @@ function formatNetworkError(error) {
   return causeMessage || error.message || `Model request failed: ${baseUrl}`
 }
 
-function extractOutputText(payload) {
+function extractOutputPayload(payload) {
   if (typeof payload?.output_text === 'string' && payload.output_text.trim()) {
     return payload.output_text
   }
 
-  const messageText = payload?.output
-    ?.flatMap((item) => item?.content ?? [])
-    ?.find((content) => content?.type === 'output_text' && typeof content.text === 'string')
-    ?.text
+  const contentItems = payload?.output?.flatMap((item) => item?.content ?? []) ?? []
+  const messageText = contentItems.find(
+    (content) => content?.type === 'output_text' && typeof content.text === 'string',
+  )?.text
+  if (typeof messageText === 'string' && messageText.trim()) {
+    return messageText
+  }
 
-  return typeof messageText === 'string' && messageText.trim() ? messageText : null
+  const parsed = contentItems.find((content) => content?.parsed)?.parsed
+  if (parsed && typeof parsed === 'object') {
+    return parsed
+  }
+
+  const json = contentItems.find((content) => content?.json)?.json
+  if (json && typeof json === 'object') {
+    return json
+  }
+
+  return null
+}
+
+function parseModelJson(output) {
+  if (output && typeof output === 'object') return output
+  if (typeof output !== 'string') return null
+
+  const cleaned = output
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+
+  try {
+    return JSON.parse(cleaned)
+  } catch {
+    const start = cleaned.indexOf('{')
+    const end = cleaned.lastIndexOf('}')
+    if (start >= 0 && end > start) {
+      return JSON.parse(cleaned.slice(start, end + 1))
+    }
+    throw new Error('Model returned text that is not valid JSON.')
+  }
 }
 
 function normalizeWhitespace(text) {
@@ -1084,12 +1118,55 @@ app.post('/api/analyze-image', async (req, res) => {
       return sendJsonError(res, 502, 'Upstream service returned a non-JSON success response.')
     }
 
-    const text = extractOutputText(payload)
-    if (!text) {
+    let output = extractOutputPayload(payload)
+    if (!output) {
+      const retryResponse = await fetch(`${baseUrl}/v1/responses`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          input: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'input_text',
+                  text: `${prompt}\n\nReturn only a valid JSON object. Do not wrap it in markdown.`,
+                },
+                { type: 'input_image', image_url: image },
+              ],
+            },
+          ],
+        }),
+      })
+      const retryText = await retryResponse.text()
+      let retryPayload = null
+
+      try {
+        retryPayload = retryText ? JSON.parse(retryText) : null
+      } catch {
+        retryPayload = null
+      }
+
+      if (!retryResponse.ok) {
+        return sendJsonError(
+          res,
+          retryResponse.status,
+          retryPayload?.error?.message || retryText?.slice(0, 500) || 'Model retry failed.',
+        )
+      }
+
+      output = retryPayload ? extractOutputPayload(retryPayload) : null
+    }
+
+    if (!output) {
       return sendJsonError(res, 502, 'Model returned success but no parsable text content.')
     }
 
-    return res.json(JSON.parse(text))
+    return res.json(parseModelJson(output))
   } catch (error) {
     return sendJsonError(res, 500, formatNetworkError(error))
   }

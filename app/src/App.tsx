@@ -132,11 +132,12 @@ function buildFigureContext(
   return contextParts.join('\n\n')
 }
 
-function clampAnnotationBox(box: Selection) {
-  const x = Math.max(0, Math.min(1000, Number(box.x) || 0))
-  const y = Math.max(0, Math.min(1000, Number(box.y) || 0))
-  const width = Math.max(1, Math.min(1000 - x, Number(box.width) || 1))
-  const height = Math.max(1, Math.min(1000 - y, Number(box.height) || 1))
+function clampAnnotationBox(box?: Selection) {
+  const source = box ?? { x: 0, y: 0, width: 1, height: 1 }
+  const x = Math.max(0, Math.min(1000, Number(source.x) || 0))
+  const y = Math.max(0, Math.min(1000, Number(source.y) || 0))
+  const width = Math.max(1, Math.min(1000 - x, Number(source.width) || 1))
+  const height = Math.max(1, Math.min(1000 - y, Number(source.height) || 1))
 
   return { x, y, width, height }
 }
@@ -163,6 +164,124 @@ function adjustAnnotationBox(
     width: dragState.startBox.width + dx,
     height: dragState.startBox.height + dy,
   })
+}
+
+function loadImageDataUrl(dataUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error('无法读取选区图像'))
+    image.src = dataUrl
+  })
+}
+
+async function cropImageSelection(
+  imageDataUrl: string,
+  selection: Selection,
+  displayedImage: HTMLImageElement,
+) {
+  const displayRect = displayedImage.getBoundingClientRect()
+  const sourceImage = await loadImageDataUrl(imageDataUrl)
+  const scaleX = sourceImage.naturalWidth / displayRect.width
+  const scaleY = sourceImage.naturalHeight / displayRect.height
+  const sourceX = Math.max(0, Math.round(selection.x * scaleX))
+  const sourceY = Math.max(0, Math.round(selection.y * scaleY))
+  const sourceWidth = Math.max(1, Math.round(selection.width * scaleX))
+  const sourceHeight = Math.max(1, Math.round(selection.height * scaleY))
+  const canvas = window.document.createElement('canvas')
+  const context = canvas.getContext('2d')
+
+  if (!context) {
+    throw new Error('无法创建选区裁剪画布')
+  }
+
+  canvas.width = Math.min(sourceWidth, sourceImage.naturalWidth - sourceX)
+  canvas.height = Math.min(sourceHeight, sourceImage.naturalHeight - sourceY)
+  context.drawImage(
+    sourceImage,
+    sourceX,
+    sourceY,
+    canvas.width,
+    canvas.height,
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+  )
+
+  return {
+    dataUrl: canvas.toDataURL('image/png'),
+    normalizedSelection: {
+      x: (selection.x / displayRect.width) * 1000,
+      y: (selection.y / displayRect.height) * 1000,
+      width: (selection.width / displayRect.width) * 1000,
+      height: (selection.height / displayRect.height) * 1000,
+    },
+  }
+}
+
+function mapCroppedResultToFullImage(
+  result: AnalysisResult,
+  normalizedSelection: Selection | null,
+) {
+  if (!normalizedSelection) return result
+
+  return {
+    ...result,
+    annotations: result.annotations.map((annotation) => {
+      const box = clampAnnotationBox(annotation.bbox)
+      return {
+        ...annotation,
+        bbox: clampAnnotationBox({
+          x: normalizedSelection.x + (box.x / 1000) * normalizedSelection.width,
+          y: normalizedSelection.y + (box.y / 1000) * normalizedSelection.height,
+          width: (box.width / 1000) * normalizedSelection.width,
+          height: (box.height / 1000) * normalizedSelection.height,
+        }),
+      }
+    }),
+  }
+}
+
+function ensureSelectedRegionAnnotation(
+  result: AnalysisResult,
+  normalizedSelection: Selection | null,
+) {
+  if (!normalizedSelection || result.annotations.length > 0) return result
+
+  return {
+    ...result,
+    annotations: [
+      {
+        label: '选中区域',
+        what: '用户红框选中的图像区域',
+        howToRead: '后续解释应只对应这个红框范围',
+        meaning: '该框来自用户选择，不是模型自动定位',
+        bbox: clampAnnotationBox(normalizedSelection),
+        confidence: 1,
+        evidenceType: 'visible' as const,
+      },
+    ],
+  }
+}
+
+function buildSelectedRegionFallbackResult(normalizedSelection: Selection): AnalysisResult {
+  return {
+    answer: '模型没有返回可解析的区域分析结果；已保留你框选的区域，请重试或调整问题。',
+    sources: ['用户红框选区'],
+    uncertainty: '这不是 AI 对图像内容的解释，只是保留选区，避免结果跳到红框外的 panel。',
+    annotations: [
+      {
+        label: '选中区域',
+        what: '用户红框选中的图像区域',
+        howToRead: '只应围绕这个区域继续提问或重试解析',
+        meaning: '该框来自用户选择，不代表模型已经完成内容判断',
+        bbox: clampAnnotationBox(normalizedSelection),
+        confidence: 1,
+        evidenceType: 'visible',
+      },
+    ],
+  }
 }
 
 async function fileToDataUrl(file: File): Promise<string> {
@@ -613,27 +732,62 @@ function App() {
     setStatus('正在调用真实多模态解析接口')
 
     try {
+      const imageForAnalysis =
+        selection && imageRef.current
+          ? await cropImageSelection(visual.dataUrl, selection, imageRef.current)
+          : null
+      const analysisQuestion = imageForAnalysis
+        ? `请只分析用户红框选中的裁剪区域，不要解释裁剪区域之外的 panel。${question}`
+        : question
+      const abortController = new AbortController()
+      const timeoutId = window.setTimeout(() => abortController.abort(), imageForAnalysis ? 75000 : 120000)
       const response = await fetch('/api/analyze-image', {
         method: 'POST',
+        signal: abortController.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          image: visual.dataUrl,
-          imageName: pdfState ? `${visual.name} page ${pdfState.currentPage}` : visual.name,
+          image: imageForAnalysis?.dataUrl ?? visual.dataUrl,
+          imageName: pdfState
+            ? `${visual.name} page ${pdfState.currentPage}${imageForAnalysis ? ' selected region' : ''}`
+            : `${visual.name}${imageForAnalysis ? ' selected region' : ''}`,
           caption: buildFigureContext(caption, selectedFigure, bodyEvidenceList),
-          question,
-          selection,
+          question: analysisQuestion,
+          selection: imageForAnalysis ? null : selection,
         }),
       })
+      window.clearTimeout(timeoutId)
 
       const { ok, payload } = await parseApiResponse(response)
       if (!ok) {
         throw new Error(payload?.error || '解析失败')
       }
 
-      setResult(payload)
+      const normalizedSelection = imageForAnalysis?.normalizedSelection ?? null
+      setResult(
+        ensureSelectedRegionAnnotation(
+          mapCroppedResultToFullImage(payload, normalizedSelection),
+          normalizedSelection,
+        ),
+      )
       setStatus('解析完成')
     } catch (error) {
-      const message = error instanceof Error ? error.message : '解析失败'
+      const message =
+        error instanceof DOMException && error.name === 'AbortError'
+          ? '选区解析超时，已保留红框选区；可以重试或调整问题。'
+          : error instanceof Error
+            ? error.message
+            : '解析失败'
+      if (selection && imageRef.current) {
+        const imageRect = imageRef.current.getBoundingClientRect()
+        setResult(
+          buildSelectedRegionFallbackResult({
+            x: (selection.x / imageRect.width) * 1000,
+            y: (selection.y / imageRect.height) * 1000,
+            width: (selection.width / imageRect.width) * 1000,
+            height: (selection.height / imageRect.height) * 1000,
+          }),
+        )
+      }
       setErrorMessage(message)
       setStatus(message)
     } finally {
