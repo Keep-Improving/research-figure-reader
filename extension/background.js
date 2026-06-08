@@ -1,0 +1,67 @@
+const API_BASE = 'http://127.0.0.1:8787'
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'fetch-image-data-url') {
+    fetch(message.url, { credentials: 'include' })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Image fetch failed: ${response.status}`)
+        }
+
+        const contentType = response.headers.get('content-type') || 'image/png'
+        const buffer = await response.arrayBuffer()
+        const bytes = new Uint8Array(buffer)
+        let binary = ''
+        const chunkSize = 0x8000
+
+        for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+          binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))
+        }
+
+        sendResponse({
+          ok: true,
+          dataUrl: `data:${contentType};base64,${btoa(binary)}`,
+        })
+      })
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Image fetch failed',
+        })
+      })
+    return true
+  }
+
+  if (message?.type === 'capture-visible-tab') {
+    chrome.tabs.captureVisibleTab(sender.tab?.windowId, { format: 'png' }, (dataUrl) => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ ok: false, error: chrome.runtime.lastError.message })
+        return
+      }
+      sendResponse({ ok: true, dataUrl })
+    })
+    return true
+  }
+
+  if (message?.type === 'analyze-figure') {
+    fetch(`${API_BASE}/api/analyze-image`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(message.payload),
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null)
+        sendResponse({ ok: response.ok, status: response.status, payload })
+      })
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          status: 0,
+          payload: { error: error instanceof Error ? error.message : '请求本地解析服务失败' },
+        })
+      })
+    return true
+  }
+
+  return false
+})

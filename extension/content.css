@@ -1,0 +1,147 @@
+.litfig-button {
+  position: absolute;
+  z-index: 2147483645;
+  border: 1px solid rgba(12, 93, 76, 0.25);
+  border-radius: 6px;
+  padding: 6px 9px;
+  background: rgba(15, 123, 97, 0.94);
+  color: #ffffff;
+  font: 600 12px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+
+.litfig-button:hover {
+  background: rgba(10, 101, 80, 0.98);
+}
+
+.litfig-capturing .litfig-button,
+.litfig-capturing .litfig-overlay,
+.litfig-capturing .litfig-panel {
+  display: none !important;
+}
+
+.litfig-overlay {
+  position: absolute;
+  z-index: 2147483644;
+  pointer-events: none;
+}
+
+.litfig-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid #d64c2f;
+  border-radius: 5px;
+  background: rgba(214, 76, 47, 0.08);
+  pointer-events: auto;
+}
+
+.litfig-box-number {
+  position: absolute;
+  top: -13px;
+  left: -13px;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 999px;
+  background: #d64c2f;
+  color: #ffffff;
+  font: 800 13px/1 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.24);
+}
+
+.litfig-tooltip {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 0;
+  display: none;
+  width: 260px;
+  gap: 5px;
+  border: 1px solid #c9d5db;
+  border-radius: 6px;
+  padding: 10px;
+  background: #ffffff;
+  color: #172026;
+  text-align: left;
+  box-shadow: 0 10px 28px rgba(23, 32, 38, 0.22);
+  font: 13px/1.38 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.litfig-box.tooltip-left .litfig-tooltip {
+  left: auto;
+  right: calc(100% + 8px);
+}
+
+.litfig-box.tooltip-above .litfig-tooltip {
+  top: auto;
+  bottom: calc(100% + 8px);
+}
+
+.litfig-box:hover .litfig-tooltip {
+  display: grid;
+}
+
+.litfig-tooltip strong {
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.litfig-panel {
+  position: fixed;
+  right: 16px;
+  top: 16px;
+  z-index: 2147483646;
+  display: grid;
+  gap: 10px;
+  width: min(360px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  border: 1px solid #c9d5db;
+  border-radius: 8px;
+  padding: 14px;
+  background: #ffffff;
+  color: #172026;
+  box-shadow: 0 16px 48px rgba(23, 32, 38, 0.24);
+  font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.litfig-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.litfig-panel h2 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+.litfig-panel button {
+  border: 1px solid #c9d5db;
+  border-radius: 6px;
+  padding: 5px 8px;
+  background: #ffffff;
+  color: #172026;
+  cursor: pointer;
+}
+
+.litfig-panel p,
+.litfig-panel ul {
+  margin: 0;
+}
+
+.litfig-panel ul {
+  padding-left: 18px;
+}
+
+.litfig-status {
+  color: #5a6871;
+  font-size: 13px;
+}
+
+.litfig-error {
+  color: #a2351f;
+}

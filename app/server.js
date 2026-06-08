@@ -841,39 +841,149 @@ function findBestFigureForPage(index, currentPage) {
     .sort((a, b) => a.distance - b.distance || b.score - a.score)[0]
 }
 
-function scoreBodyParagraph(paragraph, figureNumber, captionKeywords, captionPageNumbers) {
-  const text = paragraph.text.toLowerCase()
-  let score = 0
+function getDirectFigureReferences(text, figureNumber) {
+  const pattern = new RegExp(
+    `\\b(?:Figure|Fig\\.?)\\s*${figureNumber}(?:[A-Za-z])?(?:\\s*[,;&and-]+\\s*(?:[A-Za-z]|${figureNumber}[A-Za-z]?))*\\b`,
+    'gi',
+  )
 
-  if (/\b(?:supplementary|extended data)\s+(?:figure|fig\.?)\s*/i.test(paragraph.text)) {
-    score -= 10
-  }
+  return [...new Set([...String(text ?? '').matchAll(pattern)].map((match) => normalizeWhitespace(match[0])))]
+}
 
-  if (new RegExp(`\\b(?:figure|fig\\.?)\\s*${figureNumber}[a-z]?\\b`, 'i').test(paragraph.text)) {
-    score += 12
-  }
+function splitEvidenceSentences(text) {
+  const normalized = normalizeWhitespace(text)
+  const protectedText = normalized
+    .replace(/\bFig\./g, 'Fig__DOT__')
+    .replace(/\bDr\./g, 'Dr__DOT__')
+    .replace(/\bet al\./g, 'et al__DOT__')
+    .replace(/\be\.g\./g, 'e__DOT__g__DOT__')
+    .replace(/\bi\.e\./g, 'i__DOT__e__DOT__')
 
-  const matchedKeywords = captionKeywords.filter((keyword) => text.includes(keyword))
-  score += Math.min(8, matchedKeywords.length * 2)
-  if (matchedKeywords.length >= 2) score += 2
-
-  if (
-    /\b(as shown|shown in|we show|we found|we observed|these results|this suggests|suggests that|indicating|consistent with|in agreement with|supports the|therefore)\b/i.test(
-      paragraph.text,
+  return protectedText
+    .split(/(?<=[.!?])\s+(?=[A-Z(])/)
+    .map((sentence) =>
+      sentence
+        .replace(/Fig__DOT__/g, 'Fig.')
+        .replace(/Dr__DOT__/g, 'Dr.')
+        .replace(/et al__DOT__/g, 'et al.')
+        .replace(/e__DOT__g__DOT__/g, 'e.g.')
+        .replace(/i__DOT__e__DOT__/g, 'i.e.'),
     )
-  ) {
-    score += 3
-  }
+    .map(normalizeWhitespace)
+    .filter(Boolean)
+}
 
+function buildBodyTextStreams(page, captionBlocks) {
+  const bodyLines = page.lines
+    .map((line) => ({ ...line, pageNumber: page.pageNumber }))
+    .filter((line) => !isCaptionLine(line, captionBlocks))
+    .filter((line) => !looksLikeFooter(line, page))
+    .filter((line) => !looksLikeSectionBoundary(line.text))
+
+  const layoutMode = detectPageLayout(page)
+  const streams =
+    layoutMode === 'multi-column'
+      ? [0, 1].map((column) => ({
+          pageNumber: page.pageNumber,
+          column,
+          layoutMode,
+          lines: bodyLines
+            .filter((line) => lineColumn(line, page) === column)
+            .sort((a, b) => b.y - a.y || a.x - b.x),
+        }))
+      : [
+          {
+            pageNumber: page.pageNumber,
+            column: 0,
+            layoutMode,
+            lines: bodyLines.sort((a, b) => b.y - a.y || a.x - b.x),
+          },
+        ]
+
+  return streams
+    .map((stream) => ({
+      ...stream,
+      text: normalizeWhitespace(stream.lines.map((line) => line.text).join(' ')).replace(/-\s+/g, ''),
+    }))
+    .filter((stream) => stream.text)
+}
+
+function scoreEvidenceWindow(window, captionPageNumbers) {
   const nearestCaptionPage = captionPageNumbers.length
-    ? Math.min(...captionPageNumbers.map((pageNumber) => Math.abs(pageNumber - paragraph.pageNumber)))
+    ? Math.min(...captionPageNumbers.map((pageNumber) => Math.abs(pageNumber - window.pageNumber)))
     : 99
-  score += Math.max(0, 4 - nearestCaptionPage)
+  const pageScore = Math.max(0, 4 - nearestCaptionPage)
+  const referenceScore = window.directReferences.length > 0 ? 30 : 0
+  const keywordScore = Math.min(8, window.matchedKeywords.length * 2)
+  const explanationCueScore =
+    /\b(as shown|shown in|we show|we found|we observed|these results|this suggests|suggests that|indicating|consistent with|supports the)\b/i.test(
+      window.text,
+    )
+      ? 3
+      : 0
 
-  if (paragraph.text.length > 240) score += 1
-  if (paragraph.text.length > 600) score += 1
+  return referenceScore + keywordScore + explanationCueScore + pageScore
+}
 
-  return score
+function buildEvidenceWindowsFromStream(stream, figureNumber, captionKeywords, captionPageNumbers) {
+  const sentences = splitEvidenceSentences(stream.text)
+  const windows = []
+  const seen = new Set()
+
+  sentences.forEach((sentence, index) => {
+    const directReferences = getDirectFigureReferences(sentence, figureNumber)
+    if (directReferences.length === 0) return
+
+    const start = index
+    const end = Math.min(sentences.length, index + 2)
+    const text = normalizeWhitespace(sentences.slice(start, end).join(' '))
+    const key = `direct:${directReferences.join('|').toLowerCase()}:${text.slice(0, 120).toLowerCase()}`
+    if (seen.has(key)) return
+    seen.add(key)
+
+    const lower = text.toLowerCase()
+    const matchedKeywords = captionKeywords.filter((keyword) => lower.includes(keyword)).slice(0, 8)
+    const window = {
+      pageNumber: stream.pageNumber,
+      column: stream.column,
+      text,
+      directReferences,
+      matchedKeywords,
+      matchReason: 'direct_figure_reference',
+    }
+    windows.push({
+      ...window,
+      score: scoreEvidenceWindow(window, captionPageNumbers),
+    })
+  })
+
+  sentences.forEach((sentence, index) => {
+    const lower = sentence.toLowerCase()
+    const matchedKeywords = captionKeywords.filter((keyword) => lower.includes(keyword)).slice(0, 8)
+    if (matchedKeywords.length < 2) return
+
+    const start = index
+    const end = Math.min(sentences.length, index + 2)
+    const text = normalizeWhitespace(sentences.slice(start, end).join(' '))
+    const key = `keyword:${stream.pageNumber}:${stream.column}:${text.slice(0, 160).toLowerCase()}`
+    if (seen.has(key)) return
+    seen.add(key)
+
+    const window = {
+      pageNumber: stream.pageNumber,
+      column: stream.column,
+      text,
+      directReferences: [],
+      matchedKeywords,
+      matchReason: 'caption_keyword_proximity',
+    }
+    windows.push({
+      ...window,
+      score: scoreEvidenceWindow(window, captionPageNumbers),
+    })
+  })
+
+  return windows
 }
 
 function findBodyEvidence(pages, figureNumber, captionBlocks) {
@@ -883,25 +993,39 @@ function findBodyEvidence(pages, figureNumber, captionBlocks) {
   const seen = new Set()
 
   for (const page of pages) {
-    const paragraphs = buildReadableParagraphs(page, captionBlocks)
+    const streams = buildBodyTextStreams(page, captionBlocks)
 
-    for (const paragraph of paragraphs) {
-      const score = scoreBodyParagraph(paragraph, figureNumber, captionKeywords, captionPageNumbers)
-      if (score < 3) continue
+    for (const window of streams.flatMap((stream) =>
+      buildEvidenceWindowsFromStream(stream, figureNumber, captionKeywords, captionPageNumbers),
+    )) {
+      if (window.score < 8) continue
 
-      const key = `${paragraph.pageNumber}:${paragraph.column}:${paragraph.text.slice(0, 140)}`
+      const referenceKey =
+        window.directReferences.length > 0
+          ? window.directReferences.join('|').toLowerCase()
+          : window.text.slice(0, 140).toLowerCase()
+      const key = `${window.pageNumber}:${window.column}:${referenceKey}`
       if (seen.has(key)) continue
       seen.add(key)
 
       evidence.push({
-        pageNumber: paragraph.pageNumber,
-        text: paragraph.text.slice(0, 1200),
-        score,
+        pageNumber: window.pageNumber,
+        text: window.text.slice(0, 1600),
+        score: window.score,
+        directReferences: window.directReferences,
+        matchedKeywords: window.matchedKeywords,
+        matchReason: window.matchReason,
       })
     }
   }
 
-  return evidence.sort((a, b) => b.score - a.score).slice(0, 8)
+  return evidence
+    .sort((a, b) => {
+      const directDiff = Number(b.directReferences.length > 0) - Number(a.directReferences.length > 0)
+      if (directDiff !== 0) return directDiff
+      return b.score - a.score
+    })
+    .slice(0, 8)
 }
 
 app.post('/api/pdf-inspect', async (req, res) => {
@@ -1004,7 +1128,10 @@ app.post('/api/analyze-image', async (req, res) => {
     'Also create concise on-image annotations that help a reader quickly understand the figure.',
     'Use normalized image coordinates from 0 to 1000 for each annotation box, where x=0,y=0 is the top-left of the visible image and x=1000,y=1000 is the bottom-right of the visible image.',
     'Annotation boxes must be tight. Do not cover neighboring panels, figure captions, body text, page headers, or blank margins unless the user explicitly asks about them.',
-    'One annotation should correspond to one panel or one visual element inside a panel. Prefer the visible panel boundaries and panel letters (a, b, c...) when they exist.',
+    'One annotation should correspond to exactly one panel or one visual element inside a panel. Do not merge multiple panels into one annotation box.',
+    'For panel-level annotations, the box should enclose the full panel content including axes, labels, legends, blot lanes, microscopy tiles, and panel letter when that letter is visually part of the panel. Put the box edges in the white gutter or outside margin around the panel; do not place edges over data marks, axis labels, blot bands, microscopy content, or nearby panels.',
+    'If two panels are close together, choose a smaller box that stays inside the available gutter rather than crossing into the neighboring panel. If the exact boundary is unclear, prefer a conservative box around the visible data region and explain the uncertainty.',
+    'If visible panel letters (a, b, c...) exist, return one annotation for each visible main panel letter whenever possible. For dense figures, cover up to 20 panels instead of only the most important panels.',
     'If you cannot localize a panel precisely, return a smaller box around the most relevant visible data region instead of a large approximate box.',
     'If the user selected a local region, place annotation boxes within that selected region coordinate space as visible in the provided image.',
     'Each annotation popup must be short Chinese text: what it is, how to read it, and what it means.',
@@ -1049,7 +1176,7 @@ app.post('/api/analyze-image', async (req, res) => {
                 uncertainty: { type: 'string' },
                 annotations: {
                   type: 'array',
-                  maxItems: 8,
+                  maxItems: 20,
                   items: {
                     type: 'object',
                     additionalProperties: false,

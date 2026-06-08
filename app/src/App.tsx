@@ -45,6 +45,9 @@ type PdfEvidence = {
   pageNumber: number
   text: string
   score?: number
+  directReferences?: string[]
+  matchedKeywords?: string[]
+  matchReason?: 'direct_figure_reference' | 'caption_keyword_proximity' | 'near_caption_page'
   region?: {
     topY: number
     bottomY: number
@@ -132,6 +135,26 @@ function buildFigureContext(
   return contextParts.join('\n\n')
 }
 
+function getEvidenceReasonLabel(evidence: PdfEvidence) {
+  if (evidence.matchReason === 'direct_figure_reference') return '直接引用当前 Figure'
+  if (evidence.matchReason === 'caption_keyword_proximity') return 'caption 关键词 + 邻近页匹配'
+  if (evidence.matchReason === 'near_caption_page') return '邻近 caption 页候选'
+  return '旧版候选'
+}
+
+function renderBodyEvidenceMeta(evidence: PdfEvidence) {
+  const directReferences = evidence.directReferences?.join(', ')
+  const keywords = evidence.matchedKeywords?.slice(0, 5).join(', ')
+
+  return (
+    <>
+      <p>匹配规则：{getEvidenceReasonLabel(evidence)}</p>
+      {directReferences ? <p>命中引用：{directReferences}</p> : <p>命中引用：未检测到明确 Fig./Figure 引用</p>}
+      {keywords ? <p>关键词：{keywords}</p> : null}
+    </>
+  )
+}
+
 function clampAnnotationBox(box?: Selection) {
   const source = box ?? { x: 0, y: 0, width: 1, height: 1 }
   const x = Math.max(0, Math.min(1000, Number(source.x) || 0))
@@ -216,6 +239,131 @@ async function cropImageSelection(
       y: (selection.y / displayRect.height) * 1000,
       width: (selection.width / displayRect.width) * 1000,
       height: (selection.height / displayRect.height) * 1000,
+    },
+  }
+}
+
+async function cropPdfFigureRegion(imageDataUrl: string) {
+  const sourceImage = await loadImageDataUrl(imageDataUrl)
+  const canvas = window.document.createElement('canvas')
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+
+  if (!context) {
+    return null
+  }
+
+  canvas.width = sourceImage.naturalWidth
+  canvas.height = sourceImage.naturalHeight
+  context.drawImage(sourceImage, 0, 0)
+
+  const { width, height } = canvas
+  const imageData = context.getImageData(0, 0, width, height)
+  const data = imageData.data
+  const rowDensity = new Array<number>(height).fill(0)
+  const minXByRow = new Array<number>(height).fill(width)
+  const maxXByRow = new Array<number>(height).fill(0)
+  const pageMarginX = Math.round(width * 0.07)
+  const topGuard = Math.round(height * 0.11)
+  const bottomGuard = Math.round(height * 0.06)
+
+  for (let y = topGuard; y < height - bottomGuard; y += 1) {
+    let count = 0
+    for (let x = pageMarginX; x < width - pageMarginX; x += 2) {
+      const index = (y * width + x) * 4
+      const r = data[index]
+      const g = data[index + 1]
+      const b = data[index + 2]
+      const darkness = 255 - Math.max(r, g, b)
+      const saturation = Math.max(r, g, b) - Math.min(r, g, b)
+
+      if (darkness > 32 || saturation > 36) {
+        count += 1
+        minXByRow[y] = Math.min(minXByRow[y], x)
+        maxXByRow[y] = Math.max(maxXByRow[y], x)
+      }
+    }
+    rowDensity[y] = count
+  }
+
+  const minRowPixels = Math.max(8, Math.round((width - pageMarginX * 2) * 0.018))
+  const segments: Array<{ start: number; end: number; ink: number; minX: number; maxX: number }> = []
+  let current: { start: number; end: number; ink: number; minX: number; maxX: number } | null = null
+  let gap = 0
+  const maxGap = Math.round(height * 0.035)
+
+  for (let y = topGuard; y < height - bottomGuard; y += 1) {
+    if (rowDensity[y] >= minRowPixels) {
+      if (!current) {
+        current = { start: y, end: y, ink: 0, minX: width, maxX: 0 }
+      }
+      current.end = y
+      current.ink += rowDensity[y]
+      current.minX = Math.min(current.minX, minXByRow[y])
+      current.maxX = Math.max(current.maxX, maxXByRow[y])
+      gap = 0
+    } else if (current) {
+      gap += 1
+      if (gap > maxGap) {
+        current.end -= gap
+        segments.push(current)
+        current = null
+        gap = 0
+      }
+    }
+  }
+
+  if (current) {
+    current.end -= gap
+    segments.push(current)
+  }
+
+  const candidates = segments
+    .filter((segment) => segment.end - segment.start > height * 0.16)
+    .sort((a, b) => b.ink - a.ink)
+
+  const best = candidates[0]
+  if (!best) {
+    return null
+  }
+
+  const padX = Math.round(width * 0.025)
+  const padY = Math.round(height * 0.02)
+  const cropX = Math.max(0, best.minX - padX)
+  const cropY = Math.max(0, best.start - padY)
+  const cropWidth = Math.min(width - cropX, best.maxX - best.minX + padX * 2)
+  const cropHeight = Math.min(height - cropY, best.end - best.start + padY * 2)
+
+  if (cropWidth < width * 0.35 || cropHeight < height * 0.22) {
+    return null
+  }
+
+  const cropCanvas = window.document.createElement('canvas')
+  const cropContext = cropCanvas.getContext('2d')
+  if (!cropContext) {
+    return null
+  }
+
+  cropCanvas.width = cropWidth
+  cropCanvas.height = cropHeight
+  cropContext.drawImage(
+    sourceImage,
+    cropX,
+    cropY,
+    cropWidth,
+    cropHeight,
+    0,
+    0,
+    cropWidth,
+    cropHeight,
+  )
+
+  return {
+    dataUrl: cropCanvas.toDataURL('image/png'),
+    normalizedSelection: {
+      x: (cropX / width) * 1000,
+      y: (cropY / height) * 1000,
+      width: (cropWidth / width) * 1000,
+      height: (cropHeight / height) * 1000,
     },
   }
 }
@@ -732,15 +880,23 @@ function App() {
     setStatus('正在调用真实多模态解析接口')
 
     try {
-      const imageForAnalysis =
+      const selectedRegionForAnalysis =
         selection && imageRef.current
           ? await cropImageSelection(visual.dataUrl, selection, imageRef.current)
           : null
-      const analysisQuestion = imageForAnalysis
+      const pdfFigureRegionForAnalysis =
+        !selectedRegionForAnalysis && pdfState ? await cropPdfFigureRegion(visual.dataUrl) : null
+      const imageForAnalysis = selectedRegionForAnalysis ?? pdfFigureRegionForAnalysis
+      const analysisQuestion = selectedRegionForAnalysis
         ? `请只分析用户红框选中的裁剪区域，不要解释裁剪区域之外的 panel。${question}`
-        : question
+        : pdfFigureRegionForAnalysis
+          ? `当前输入已自动裁剪为 PDF 页面中的主 figure 区域；请尽量识别并解释每个可见 panel，不要解释裁剪区域之外的正文、页眉或页脚。${question}`
+          : question
       const abortController = new AbortController()
-      const timeoutId = window.setTimeout(() => abortController.abort(), imageForAnalysis ? 75000 : 120000)
+      const timeoutId = window.setTimeout(
+        () => abortController.abort(),
+        selectedRegionForAnalysis ? 90000 : 120000,
+      )
       const response = await fetch('/api/analyze-image', {
         method: 'POST',
         signal: abortController.signal,
@@ -748,7 +904,7 @@ function App() {
         body: JSON.stringify({
           image: imageForAnalysis?.dataUrl ?? visual.dataUrl,
           imageName: pdfState
-            ? `${visual.name} page ${pdfState.currentPage}${imageForAnalysis ? ' selected region' : ''}`
+            ? `${visual.name} page ${pdfState.currentPage}${selectedRegionForAnalysis ? ' selected region' : pdfFigureRegionForAnalysis ? ' figure crop' : ''}`
             : `${visual.name}${imageForAnalysis ? ' selected region' : ''}`,
           caption: buildFigureContext(caption, selectedFigure, bodyEvidenceList),
           question: analysisQuestion,
@@ -1018,6 +1174,7 @@ function App() {
                       页码：{topBodyEvidence.pageNumber}
                       {typeof topBodyEvidence.score === 'number' ? `；置信分：${topBodyEvidence.score}` : ''}
                     </p>
+                    {renderBodyEvidenceMeta(topBodyEvidence)}
                     <p>{topBodyEvidence.text}</p>
                   </div>
                 ) : null}
@@ -1030,6 +1187,7 @@ function App() {
                           页码：{item.pageNumber}
                           {typeof item.score === 'number' ? `；置信分：${item.score}` : ''}
                         </p>
+                        {renderBodyEvidenceMeta(item)}
                         <p>{item.text}</p>
                       </div>
                     ))}

@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "科研图片理解助手",
+  "version": "0.1.0",
+  "description": "在论文网页中直接解析 figure，并把解释框覆盖回图片上。",
+  "permissions": ["activeTab", "scripting", "tabs"],
+  "host_permissions": ["http://127.0.0.1:8787/*", "http://localhost:8787/*", "<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "科研图片理解助手"
+  }
+}
