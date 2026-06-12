@@ -233,9 +233,9 @@
 
 ### M5：文献笔记导出
 
-状态：未完成
+状态：部分完成
 
-- 保存解析结果
+- 保存解析结果：已完成 MVP，后端提供本地 JSON store 和 `/api/analysis` / `/api/analysis/lookup`，插件结果面板提供“保存本次解读”
 - 导出 Markdown
 - 导出结构化 JSON
 
@@ -244,8 +244,8 @@
 状态：部分完成
 
 - 浏览器扩展侧栏：已完成 MVP，网页图片点击“解析图”后显示右侧解释面板
-- 从当前网页获取截图、图片区域和附近 caption 文本：已完成 MVP，基于当前可见图片截图裁剪和附近 `figcaption` / `alt` / 邻近文本
-- 浏览器内置 PDF 阅读器集成：未完成
+- 从当前网页获取截图、图片区域和附近 caption 文本：已完成 MVP，插件会把 DOM caption 候选交给后端统一清洗和打分
+- 浏览器内置 PDF 阅读器集成：部分完成，插件可检测浏览器 PDF / PDF.js / 嵌入式 PDF，能读取 PDF bytes 时复用后端 PDF caption/body evidence，不能读取时明确降级为截图 fallback
 - Zotero 集成方案验证
 
 ## 10. 待确认问题

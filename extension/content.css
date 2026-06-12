@@ -15,6 +15,10 @@
   background: rgba(10, 101, 80, 0.98);
 }
 
+.litfig-pdf-button {
+  position: fixed;
+}
+
 .litfig-capturing .litfig-button,
 .litfig-capturing .litfig-overlay,
 .litfig-capturing .litfig-panel {

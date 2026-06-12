@@ -43,6 +43,77 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true
   }
 
+  if (message?.type === 'fetch-pdf-data-url') {
+    fetch(message.url, { credentials: 'include' })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`PDF fetch failed: ${response.status}`)
+        }
+
+        const contentType = response.headers.get('content-type') || 'application/pdf'
+        const buffer = await response.arrayBuffer()
+        const bytes = new Uint8Array(buffer)
+        let binary = ''
+        const chunkSize = 0x8000
+
+        for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+          binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))
+        }
+
+        sendResponse({
+          ok: true,
+          dataUrl: `data:${contentType};base64,${btoa(binary)}`,
+        })
+      })
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : 'PDF fetch failed',
+        })
+      })
+    return true
+  }
+
+  if (message?.type === 'request-figure-context') {
+    fetch(`${API_BASE}/api/browser/figure-context`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(message.payload),
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null)
+        sendResponse({ ok: response.ok, status: response.status, payload })
+      })
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          status: 0,
+          payload: { error: error instanceof Error ? error.message : '请求本地上下文服务失败' },
+        })
+      })
+    return true
+  }
+
+  if (message?.type === 'save-analysis') {
+    fetch(`${API_BASE}/api/analysis`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(message.payload),
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null)
+        sendResponse({ ok: response.ok, status: response.status, payload })
+      })
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          status: 0,
+          payload: { error: error instanceof Error ? error.message : '保存解析结果失败' },
+        })
+      })
+    return true
+  }
+
   if (message?.type === 'analyze-figure') {
     fetch(`${API_BASE}/api/analyze-image`, {
       method: 'POST',

@@ -1,12 +1,16 @@
 import 'dotenv/config'
 import cors from 'cors'
 import express from 'express'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 
 const app = express()
 const port = Number(process.env.PORT || 8787)
 const model = process.env.OPENAI_MODEL || 'gpt-5.4'
 const baseUrl = (process.env.OPENAI_BASE_URL || 'https://api.openai.com').replace(/\/+$/, '')
+const dataDir = path.resolve('data')
+const analysisStorePath = process.env.ANALYSIS_STORE_PATH || path.join(dataDir, 'analysis-store.json')
 
 app.use(cors())
 app.use(express.json({ limit: '80mb' }))
@@ -73,13 +77,49 @@ function parseModelJson(output) {
   try {
     return JSON.parse(cleaned)
   } catch {
-    const start = cleaned.indexOf('{')
-    const end = cleaned.lastIndexOf('}')
-    if (start >= 0 && end > start) {
-      return JSON.parse(cleaned.slice(start, end + 1))
+    const jsonObjectText = extractFirstJsonObject(cleaned)
+    if (jsonObjectText) {
+      return JSON.parse(jsonObjectText)
     }
     throw new Error('Model returned text that is not valid JSON.')
   }
+}
+
+function extractFirstJsonObject(text) {
+  const start = text.indexOf('{')
+  if (start < 0) return null
+
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index]
+
+    if (inString) {
+      if (escaped) {
+        escaped = false
+      } else if (char === '\\') {
+        escaped = true
+      } else if (char === '"') {
+        inString = false
+      }
+      continue
+    }
+
+    if (char === '"') {
+      inString = true
+    } else if (char === '{') {
+      depth += 1
+    } else if (char === '}') {
+      depth -= 1
+      if (depth === 0) {
+        return text.slice(start, index + 1)
+      }
+    }
+  }
+
+  return null
 }
 
 function normalizeWhitespace(text) {
@@ -93,6 +133,256 @@ function normalizeFigureLabel(label) {
   const match = String(label ?? '').match(/^(\d+)/)
   return match?.[1] ?? null
 }
+
+function extractFigureReferenceText(text, figureNumber) {
+  if (!figureNumber) return []
+  const normalized = String(text ?? '')
+  const pattern = new RegExp(`\\b(?:Figure|Fig\\.?)\\s*${figureNumber}[A-Za-z]?\\b`, 'gi')
+  return [...new Set([...normalized.matchAll(pattern)].map((match) => match[0]))]
+}
+
+function inferFigureLabelFromText(text) {
+  const captionStart = getCaptionStart(text)
+  if (captionStart?.figureNumber) return captionStart.figureNumber
+  return getFigureMentions(text)[0]?.figureNumber ?? null
+}
+
+function normalizeBrowserCaptionCandidate(candidate) {
+  const text = normalizeWhitespace(candidate?.text)
+  if (!text) return null
+
+  const source = String(candidate?.source || 'nearby-text')
+  const sourceScore =
+    source === 'site-adapter'
+      ? 0.9
+      : source === 'html-figcaption'
+        ? 0.82
+        : source === 'nearby-text'
+          ? 0.48
+          : source === 'alt'
+            ? 0.28
+            : 0.35
+  const confidence = Number.isFinite(Number(candidate?.confidence))
+    ? Number(candidate.confidence)
+    : sourceScore
+  const isComplete =
+    typeof candidate?.isComplete === 'boolean'
+      ? candidate.isComplete
+      : /^(?:Figure|Fig\.?|FIG\.?)\s*\d+/i.test(text) && text.length > 80
+  const figureLabel = inferFigureLabelFromText(text)
+
+  return {
+    text,
+    source,
+    confidence: Math.max(0, Math.min(1, confidence)),
+    isComplete,
+    evidence: Array.isArray(candidate?.evidence) ? candidate.evidence.map(normalizeWhitespace) : [],
+    figureLabel,
+    score:
+      Math.max(0, Math.min(1, confidence)) * 100 +
+      (isComplete ? 25 : 0) +
+      (figureLabel ? 20 : 0) +
+      Math.min(text.length / 80, 20),
+  }
+}
+
+function normalizeBrowserBodyEvidence(text, figureNumber, source = 'html-body') {
+  const normalized = normalizeWhitespace(text).slice(0, 1600)
+  if (!normalized) return null
+
+  const directReferences = extractFigureReferenceText(normalized, figureNumber)
+  return {
+    text: normalized,
+    source,
+    confidence: directReferences.length > 0 ? 0.82 : 0.36,
+    directReferences,
+  }
+}
+
+function buildBrowserFigureContextFromHtmlPayload(payload = {}) {
+  const captionCandidates = (Array.isArray(payload.captionCandidates) ? payload.captionCandidates : [])
+    .map(normalizeBrowserCaptionCandidate)
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score)
+
+  const selectedCaption = captionCandidates[0]?.text ?? ''
+  const figureLabel =
+    captionCandidates.find((candidate) => candidate.figureLabel)?.figureLabel ??
+    inferFigureLabelFromText(payload.figureLabel) ??
+    null
+  const bodyEvidence = [
+    normalizeBrowserBodyEvidence(payload.nearbyBodyText, figureLabel),
+    normalizeBrowserBodyEvidence(payload.pageText, figureLabel),
+  ].filter(Boolean)
+
+  return {
+    sourceType: 'html',
+    documentId: payload.documentId ?? null,
+    pageUrl: payload.pageUrl ?? '',
+    title: payload.title ?? '',
+    figureLabel,
+    selectedCaption,
+    captionCandidates: captionCandidates.slice(0, 5),
+    captionSource: captionCandidates[0]?.source ?? 'none',
+    captionConfidence: captionCandidates[0]?.confidence ?? 0,
+    captionIsComplete: Boolean(captionCandidates[0]?.isComplete),
+    bodyEvidence: bodyEvidence.slice(0, 5),
+    note:
+      selectedCaption.length > 0
+        ? '已从网页 DOM 候选中选择最可信的图注。'
+        : '未从网页 DOM 中找到可靠图注。',
+  }
+}
+
+function buildBrowserPdfFallbackContext(payload = {}) {
+  return {
+    sourceType: 'pdf-fallback',
+    documentId: payload.documentId ?? null,
+    pageUrl: payload.pageUrl ?? '',
+    title: payload.title ?? '',
+    currentPage: Number(payload.currentPage) || null,
+    figureLabel: null,
+    selectedCaption: '',
+    captionCandidates: [],
+    captionSource: 'none',
+    captionConfidence: 0,
+    captionIsComplete: false,
+    bodyEvidence: [],
+    note: '未读取到 PDF 文本层，当前只能使用截图和用户选区作为图像依据。',
+  }
+}
+
+function buildBrowserFigureContextFromPdfPages(pages, payload = {}) {
+  const pageNumber = Number(payload.currentPage) || 1
+  const index = buildPaperFigureIndex(pages)
+  const currentFigure =
+    (payload.figureLabel &&
+      index.find((entry) => entry.figureLabel === normalizeFigureLabel(payload.figureLabel))) ||
+    findBestFigureForPage(index, pageNumber)
+
+  if (!currentFigure) {
+    return {
+      ...buildBrowserPdfFallbackContext(payload),
+      sourceType: 'pdf',
+      currentPage: pageNumber,
+      note: '已读取 PDF 文本层，但没有识别到当前页对应的主图图注。',
+    }
+  }
+
+  return {
+    sourceType: 'pdf',
+    documentId: payload.documentId ?? null,
+    pageUrl: payload.pageUrl ?? '',
+    title: payload.title ?? '',
+    currentPage: pageNumber,
+    figureLabel: currentFigure.figureLabel,
+    selectedCaption: currentFigure.captionCandidates[0]?.text ?? '',
+    captionCandidates: currentFigure.captionCandidates.map((candidate) => ({
+      ...candidate,
+      source: 'pdf-caption',
+      confidence: Math.max(0, Math.min(1, (candidate.score ?? 0) / 100)),
+      isComplete: true,
+    })),
+    captionSource: currentFigure.captionCandidates[0] ? 'pdf-caption' : 'none',
+    captionConfidence: currentFigure.captionCandidates[0]
+      ? Math.max(0, Math.min(1, (currentFigure.captionCandidates[0].score ?? 0) / 100))
+      : 0,
+    captionIsComplete: Boolean(currentFigure.captionCandidates[0]),
+    bodyEvidence: currentFigure.bodyEvidence.map((evidence) => ({
+      ...evidence,
+      source: 'pdf-body',
+      confidence: evidence.directReferences?.length > 0 ? 0.86 : 0.5,
+    })),
+    note: '已复用网站 PDF 全文解析管线匹配图注和正文引用。',
+  }
+}
+
+function createAnalysisStore(filePath = null) {
+  const memoryRecords = []
+
+  async function readRecords() {
+    if (!filePath) return memoryRecords
+    try {
+      const raw = await fs.readFile(filePath, 'utf8')
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed.records) ? parsed.records : []
+    } catch (error) {
+      if (error?.code === 'ENOENT') return []
+      throw error
+    }
+  }
+
+  async function writeRecords(records) {
+    if (!filePath) {
+      memoryRecords.splice(0, memoryRecords.length, ...records)
+      return
+    }
+    await fs.mkdir(path.dirname(filePath), { recursive: true })
+    await fs.writeFile(filePath, `${JSON.stringify({ records }, null, 2)}\n`, 'utf8')
+  }
+
+  return {
+    async create(input = {}) {
+      const records = await readRecords()
+      const now = new Date().toISOString()
+      const version =
+        records.filter(
+          (record) =>
+            record.documentId === input.documentId &&
+            record.figureId === input.figureId &&
+            record.imageFingerprint === input.imageFingerprint,
+        ).length + 1
+      const record = {
+        id: `analysis-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        documentId: input.documentId || null,
+        figureId: input.figureId || null,
+        imageFingerprint: input.imageFingerprint || null,
+        imageUrl: input.imageUrl || null,
+        pageUrl: input.pageUrl || '',
+        source: input.source || 'web-app',
+        model: input.model || model,
+        answer: input.answer || '',
+        uncertainty: input.uncertainty || '',
+        sources: Array.isArray(input.sources) ? input.sources : [],
+        annotations: Array.isArray(input.annotations) ? input.annotations : [],
+        context: input.context || null,
+        version,
+        createdAt: now,
+        updatedAt: now,
+      }
+      records.push(record)
+      await writeRecords(records)
+      return record
+    },
+
+    async lookup(query = {}) {
+      const records = await readRecords()
+      return (
+        records
+          .filter((record) => {
+            if (query.documentId && record.documentId !== query.documentId) return false
+            if (query.figureId && record.figureId !== query.figureId) return false
+            if (query.imageFingerprint && record.imageFingerprint !== query.imageFingerprint) return false
+            return true
+          })
+          .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0] || null
+      )
+    },
+
+    async list(query = {}) {
+      const records = await readRecords()
+      return records
+        .filter((record) => {
+          if (query.documentId && record.documentId !== query.documentId) return false
+          if (query.figureId && record.figureId !== query.figureId) return false
+          return true
+        })
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    },
+  }
+}
+
+const analysisStore = createAnalysisStore(analysisStorePath)
 
 function getCaptionStart(lineText) {
   const normalized = normalizeWhitespace(lineText)
@@ -304,6 +594,19 @@ function looksLikeStandaloneUrl(lineText) {
   return /^https?:\/\//i.test(normalizeWhitespace(lineText))
 }
 
+function looksLikeBodyParagraphContinuation(lineText) {
+  const text = normalizeWhitespace(lineText)
+  if (!text) return false
+  if (/^(?:[a-z]\)|[A-Z]\)|\([a-z]\)|\([A-Z]\))/.test(text)) return false
+  if (/^(?:Data|Error bars?|Scale bars?|Representative|Quantification|Western blot|Images?|Expression|Distribution)\b/i.test(text)) {
+    return false
+  }
+  if (/^(?:We|To|Next|Then|Here|This|These|Those|Interestingly|Notably|Therefore|However|In both|After|By|For that)\b/i.test(text)) {
+    return true
+  }
+  return text.length > 120 && /[.!?]$/.test(text) && !/[;,]$/.test(text)
+}
+
 function getCaptionFlowMode(page, startLine) {
   const nearbyBelow = page.lines.filter(
     (line) => line.y <= startLine.y + 2 && line.y >= startLine.y - Math.max(70, page.height * 0.09),
@@ -363,6 +666,9 @@ function buildSingleFlowCaptionLines(page, startLine) {
     const rowText = normalizeWhitespace(row.lines.map((line) => line.text).join(' '))
     if (index > startRowIndex && looksLikeSectionBoundary(rowText)) break
     if (index > startRowIndex && getCaptionStart(rowText)) break
+    if (index > startRowIndex && captionRows.length <= 2 && looksLikeBodyParagraphContinuation(rowText)) {
+      break
+    }
 
     captionRows.push(row)
     previousY = row.y
@@ -403,6 +709,7 @@ function buildCaptionColumnLines(page, startLine, column) {
     }
 
     if (index > startIndex && getCaptionStart(line.text)) break
+    if (index > startIndex && captionLines.length <= 2 && looksLikeBodyParagraphContinuation(line.text)) break
 
     captionLines.push(line)
     previous = line
@@ -1101,6 +1408,69 @@ app.post('/api/pdf-index', async (req, res) => {
   }
 })
 
+app.post('/api/browser/figure-context', async (req, res) => {
+  const payload = req.body ?? {}
+  const sourceType = payload.sourceType === 'pdf' ? 'pdf' : 'html'
+
+  try {
+    if (sourceType === 'pdf') {
+      if (typeof payload.pdf === 'string' && payload.pdf.startsWith('data:application/pdf')) {
+        const pages = await loadPdfTextPagesFromDataUrl(payload.pdf)
+        return res.json(buildBrowserFigureContextFromPdfPages(pages, payload))
+      }
+
+      return res.json(buildBrowserPdfFallbackContext(payload))
+    }
+
+    return res.json(buildBrowserFigureContextFromHtmlPayload(payload))
+  } catch (error) {
+    return sendJsonError(
+      res,
+      500,
+      error instanceof Error ? error.message : 'Browser figure context failed.',
+    )
+  }
+})
+
+app.post('/api/analysis', async (req, res) => {
+  try {
+    const record = await analysisStore.create(req.body ?? {})
+    return res.status(201).json(record)
+  } catch (error) {
+    return sendJsonError(
+      res,
+      500,
+      error instanceof Error ? error.message : 'Failed to save analysis record.',
+    )
+  }
+})
+
+app.get('/api/analysis/lookup', async (req, res) => {
+  try {
+    const record = await analysisStore.lookup(req.query ?? {})
+    return res.json({ record })
+  } catch (error) {
+    return sendJsonError(
+      res,
+      500,
+      error instanceof Error ? error.message : 'Failed to look up analysis record.',
+    )
+  }
+})
+
+app.get('/api/analysis', async (req, res) => {
+  try {
+    const records = await analysisStore.list(req.query ?? {})
+    return res.json({ records })
+  } catch (error) {
+    return sendJsonError(
+      res,
+      500,
+      error instanceof Error ? error.message : 'Failed to list analysis records.',
+    )
+  }
+})
+
 app.post('/api/analyze-image', async (req, res) => {
   const { image, imageName, caption, question, selection } = req.body ?? {}
 
@@ -1128,8 +1498,8 @@ app.post('/api/analyze-image', async (req, res) => {
     'Also create concise on-image annotations that help a reader quickly understand the figure.',
     'Use normalized image coordinates from 0 to 1000 for each annotation box, where x=0,y=0 is the top-left of the visible image and x=1000,y=1000 is the bottom-right of the visible image.',
     'Annotation boxes must be tight. Do not cover neighboring panels, figure captions, body text, page headers, or blank margins unless the user explicitly asks about them.',
-    'One annotation should correspond to exactly one panel or one visual element inside a panel. Do not merge multiple panels into one annotation box.',
-    'For panel-level annotations, the box should enclose the full panel content including axes, labels, legends, blot lanes, microscopy tiles, and panel letter when that letter is visually part of the panel. Put the box edges in the white gutter or outside margin around the panel; do not place edges over data marks, axis labels, blot bands, microscopy content, or nearby panels.',
+    'One annotation should correspond to exactly one main figure panel, usually indicated by panel letters such as a, b, c or A, B, C. Do not annotate individual subplots, grid cells, single curves, scatter groups, blot lanes, microscopy tiles, or other local elements as separate panels unless the user explicitly selected that local region.',
+    'For panel-level annotations, the box should enclose the full main panel content including axes, labels, legends, blot lanes, microscopy grids, and panel letter when that letter is visually part of the panel. Put the box edges in the white gutter or outside margin around the panel; do not place edges over data marks, axis labels, blot bands, microscopy content, or nearby panels.',
     'If two panels are close together, choose a smaller box that stays inside the available gutter rather than crossing into the neighboring panel. If the exact boundary is unclear, prefer a conservative box around the visible data region and explain the uncertainty.',
     'If visible panel letters (a, b, c...) exist, return one annotation for each visible main panel letter whenever possible. For dense figures, cover up to 20 panels instead of only the most important panels.',
     'If you cannot localize a panel precisely, return a smaller box around the most relevant visible data region instead of a large approximate box.',
@@ -1323,7 +1693,18 @@ app.use((error, _req, res, next) => {
   )
 })
 
-app.listen(port, () => {
-  console.log(`API server listening on http://localhost:${port}`)
-  console.log(`Model endpoint: ${baseUrl}/v1/responses`)
-})
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(port, () => {
+    console.log(`API server listening on http://localhost:${port}`)
+    console.log(`Model endpoint: ${baseUrl}/v1/responses`)
+  })
+}
+
+export {
+  app,
+  buildCaptionBlockFromStart,
+  createAnalysisStore,
+  buildBrowserFigureContextFromHtmlPayload,
+  buildBrowserPdfFallbackContext,
+  buildBrowserFigureContextFromPdfPages,
+}
