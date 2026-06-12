@@ -18,6 +18,14 @@ function removeExistingExtensionUi() {
     .forEach((element) => element.remove())
 }
 
+function restoreScrollFromHash() {
+  const match = window.location.hash.match(/litfig-scroll=(\d+)/)
+  if (!match) return
+  window.setTimeout(() => {
+    window.scrollTo({ top: Number(match[1]), behavior: 'smooth' })
+  }, 300)
+}
+
 function sendMessage(message) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(message, resolve)
@@ -1125,6 +1133,7 @@ function scheduleScan() {
 }
 
 removeExistingExtensionUi()
+restoreScrollFromHash()
 scanImages()
 window.addEventListener('scroll', scheduleOverlayUpdate, { passive: true })
 window.addEventListener('resize', scheduleOverlayUpdate)

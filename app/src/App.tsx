@@ -588,6 +588,31 @@ function formatSavedAt(value: string) {
   return date.toLocaleString()
 }
 
+function buildStableUrlWithScroll(url: string, scrollY?: number | null) {
+  if (!url) return ''
+  if (!Number.isFinite(Number(scrollY))) return url
+  try {
+    const parsed = new URL(url)
+    parsed.hash = `litfig-scroll=${Math.max(0, Math.round(Number(scrollY)))}`
+    return parsed.href
+  } catch {
+    return url
+  }
+}
+
+function buildPdfPageUrl(url: string, pageNumber?: number | null) {
+  if (!url || url.startsWith('blob:')) return ''
+  if (!/\.pdf(?:[?#].*)?$/i.test(url)) return ''
+  if (!Number.isFinite(Number(pageNumber)) || Number(pageNumber) < 1) return ''
+  try {
+    const parsed = new URL(url)
+    parsed.hash = `page=${Math.max(1, Math.round(Number(pageNumber)))}`
+    return parsed.href
+  } catch {
+    return ''
+  }
+}
+
 function App() {
   const imageRef = useRef<HTMLImageElement | null>(null)
   const lastInspectedRef = useRef('')
@@ -1180,6 +1205,20 @@ function App() {
     analysisRecords.find((record) => record.id === selectedRecordId) ??
     filteredRecords[0] ??
     null
+  const currentPdfHash = visual?.originalDataUrl ? hashString(visual.originalDataUrl.slice(0, 2000)) : ''
+  const selectedRecordPdfPage =
+    selectedRecord?.figure?.pageNumber ?? selectedRecord?.figure?.locator?.pdfPage ?? null
+  const selectedRecordPageUrl =
+    selectedRecord?.figure?.locator?.pageUrl || selectedRecord?.paper?.sourceUrl || selectedRecord?.pageUrl || ''
+  const selectedRecordImageUrl =
+    selectedRecord?.figure?.locator?.imageUrl || selectedRecord?.figure?.imageUrl || selectedRecord?.imageUrl || ''
+  const selectedRecordWebUrl = buildStableUrlWithScroll(
+    selectedRecordPageUrl,
+    selectedRecord?.figure?.locator?.scrollY,
+  )
+  const selectedRecordPdfUrl = buildPdfPageUrl(selectedRecordImageUrl || selectedRecordPageUrl, selectedRecordPdfPage)
+  const selectedRecordMatchesCurrentPdf =
+    Boolean(selectedRecord?.paper?.pdfHash) && selectedRecord.paper?.pdfHash === currentPdfHash
 
   return (
     <main className="app-shell">
@@ -1424,6 +1463,39 @@ function App() {
                         来源：{selectedRecord.figure?.locator?.source || selectedRecord.source}
                       </p>
                       {selectedRecord.figure?.captionText ? <p>{selectedRecord.figure.captionText}</p> : null}
+                      <div className="trace-actions">
+                        {selectedRecordWebUrl ? (
+                          <button type="button" onClick={() => window.open(selectedRecordWebUrl, '_blank', 'noopener,noreferrer')}>
+                            打开原文网页
+                          </button>
+                        ) : null}
+                        {selectedRecordImageUrl && !selectedRecordImageUrl.startsWith('blob:') ? (
+                          <button type="button" onClick={() => window.open(selectedRecordImageUrl, '_blank', 'noopener,noreferrer')}>
+                            打开原图/PDF
+                          </button>
+                        ) : null}
+                        {selectedRecordPdfUrl ? (
+                          <button type="button" onClick={() => window.open(selectedRecordPdfUrl, '_blank', 'noopener,noreferrer')}>
+                            打开 PDF 第 {selectedRecordPdfPage ?? '?'} 页
+                          </button>
+                        ) : null}
+                        {selectedRecordMatchesCurrentPdf && selectedRecordPdfPage ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setViewMode('reader')
+                              void goToPdfPage(selectedRecordPdfPage)
+                            }}
+                          >
+                            跳到当前 PDF 第 {selectedRecordPdfPage} 页
+                          </button>
+                        ) : selectedRecord?.paper?.pdfHash ? (
+                          <span className="muted">重新上传同一 PDF 后可跳到保存页码。</span>
+                        ) : null}
+                        {selectedRecordImageUrl.startsWith('blob:') ? (
+                          <span className="muted">该 PDF 使用临时 blob URL，不能稳定回溯。</span>
+                        ) : null}
+                      </div>
                     </section>
                     <section>
                       <h3>短结论</h3>

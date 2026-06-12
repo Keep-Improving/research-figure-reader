@@ -333,6 +333,34 @@ type FigureSnapshot = {
 - 提供“来源”区：网页 URL、图片 URL、PDF 页码、caption 来源。
 - 后续增加“重命名/关联 Figure”功能，把待命名图手动关联到 `Figure 1` 等标签。
 
+#### M5.3 回到原文设计
+
+保存记录后，用户需要从解析库回到原文上下文。第一版不尝试绕过浏览器安全限制，不自动读取本地文件路径，而是按来源提供可执行的回溯入口。
+
+网页插件记录：
+
+- 如果 `figure.locator.pageUrl` 存在，详情页显示“打开原文网页”。
+- 如果保存了 `scrollY`，打开 URL 时附加 `#litfig-scroll=<scrollY>`；插件后续读取该 hash 后滚动到原位置。
+- 如果保存了 `imageUrl`，详情页显示“打开原图”。
+- 未来插件打开页面后调用 `/api/analysis/lookup`，按 `documentId + imageFingerprint` 找到历史解析，并提示“已有解析可恢复”。
+
+浏览器 PDF 记录：
+
+- 如果 `figure.locator.imageUrl` 或 `pageUrl` 是 PDF URL，详情页显示“打开 PDF 第 X 页”。
+- URL 采用 `pdfUrl#page=X`。如果是 `blob:` URL 或不可持久化 URL，则显示“该 PDF URL 不能稳定回溯”。
+
+网站上传 PDF 记录：
+
+- 不能自动打开用户本地文件路径。
+- 详情页显示“匹配当前上传 PDF”状态：如果当前网站已上传 PDF 且 `paper.pdfHash` 与记录一致，提供“跳到第 X 页”按钮。
+- 如果没有上传同一 PDF，显示“重新上传同一 PDF 后可跳转到保存页码”。
+
+第一版实现范围：
+
+- 解析库详情提供“打开原文网页”“打开原图”“打开 PDF 第 X 页”“跳到当前 PDF 第 X 页”按钮。
+- 网站端根据当前 `visual.originalDataUrl` hash 判断是否与历史记录同 PDF。
+- 插件自动恢复历史红框暂不实现，只保留 locator 和 URL hash，为下一步做准备。
+
 ### M6：真实阅读环境集成
 
 状态：部分完成

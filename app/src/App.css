@@ -249,6 +249,23 @@
   line-height: 1.45;
 }
 
+.trace-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.trace-actions button {
+  border: 1px solid #c9d5db;
+  border-radius: 6px;
+  padding: 7px 10px;
+  background: #ffffff;
+  color: #172026;
+  cursor: pointer;
+}
+
 .image-layer {
   position: relative;
   display: inline-block;
