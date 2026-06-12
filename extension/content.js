@@ -12,6 +12,10 @@ const state = {
   raf: 0,
 }
 
+function isResearchFigureReaderApp() {
+  return /^https?:\/\/(?:127\.0\.0\.1|localhost):5173\b/.test(window.location.href)
+}
+
 function removeExistingExtensionUi() {
   document
     .querySelectorAll(`.${BUTTON_CLASS}, .${OVERLAY_CLASS}, #${PANEL_ID}`)
@@ -117,6 +121,7 @@ function getAnalysisImageUrls(image) {
 }
 
 function isCandidateImage(image) {
+  if (isResearchFigureReaderApp()) return false
   const rect = viewportRectForElement(image)
   if (!rect || rect.width < MIN_FIGURE_WIDTH || rect.height < MIN_FIGURE_HEIGHT) return false
   if (image.closest(`.${PANEL_ID}, .${BUTTON_CLASS}, .${OVERLAY_CLASS}`)) return false
@@ -1199,18 +1204,20 @@ function scheduleScan() {
 }
 
 removeExistingExtensionUi()
-restoreScrollFromHash()
-scanImages()
-void restoreSavedAnalysisFromHash()
-window.addEventListener('scroll', scheduleOverlayUpdate, { passive: true })
-window.addEventListener('resize', scheduleOverlayUpdate)
+if (!isResearchFigureReaderApp()) {
+  restoreScrollFromHash()
+  scanImages()
+  void restoreSavedAnalysisFromHash()
+  window.addEventListener('scroll', scheduleOverlayUpdate, { passive: true })
+  window.addEventListener('resize', scheduleOverlayUpdate)
 
-const resizeObserver = new ResizeObserver(scheduleOverlayUpdate)
-document.querySelectorAll('img').forEach((image) => resizeObserver.observe(image))
-
-const observer = new MutationObserver(() => {
+  const resizeObserver = new ResizeObserver(scheduleOverlayUpdate)
   document.querySelectorAll('img').forEach((image) => resizeObserver.observe(image))
-  scheduleScan()
-  scheduleOverlayUpdate()
-})
-observer.observe(document.documentElement, { childList: true, subtree: true })
+
+  const observer = new MutationObserver(() => {
+    document.querySelectorAll('img').forEach((image) => resizeObserver.observe(image))
+    scheduleScan()
+    scheduleOverlayUpdate()
+  })
+  observer.observe(document.documentElement, { childList: true, subtree: true })
+}

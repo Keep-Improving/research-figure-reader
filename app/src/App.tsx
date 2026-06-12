@@ -781,6 +781,26 @@ function App() {
   }
 
   const openSavedPdfInWorkspace = async (record: AnalysisRecord) => {
+    const savedImageDataUrl = record.figure?.imageDataUrl || record.figure?.thumbnailDataUrl
+    if (savedImageDataUrl) {
+      setViewMode('reader')
+      resetView()
+      setPdfState(null)
+      setPageInput('1')
+      clearPdfContext()
+      setVisual({
+        name: `${record.paper?.title || record.figureId || 'saved analysis'} replay`,
+        kind: 'image',
+        type: 'image/png',
+        dataUrl: savedImageDataUrl,
+        originalDataUrl: record.paper?.pdfDataUrl || undefined,
+      })
+      setResult(analysisRecordToResult(record))
+      setCaption(record.figure?.captionText || '')
+      setStatus('已恢复保存的图像、红框和解析结果')
+      return
+    }
+
     const pdfDataUrl = record.paper?.pdfDataUrl
     if (!pdfDataUrl) return
     setViewMode('reader')
@@ -1572,9 +1592,11 @@ function App() {
                         ) : selectedRecord?.paper?.pdfHash && !selectedRecord.paper?.pdfDataUrl ? (
                           <span className="muted">重新上传同一 PDF 后可跳到保存页码。</span>
                         ) : null}
-                        {selectedRecord?.paper?.pdfDataUrl ? (
+                        {selectedRecord?.paper?.pdfDataUrl ||
+                        selectedRecord?.figure?.imageDataUrl ||
+                        selectedRecord?.figure?.thumbnailDataUrl ? (
                           <button type="button" onClick={() => void openSavedPdfInWorkspace(selectedRecord)}>
-                            在网站中打开历史 PDF 第 {selectedRecordPdfPage ?? 1} 页
+                            在工作台恢复保存的解析
                           </button>
                         ) : null}
                         {selectedRecordImageUrl.startsWith('blob:') ? (
