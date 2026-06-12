@@ -12,8 +12,12 @@ const state = {
   raf: 0,
 }
 
-function isResearchFigureReaderApp() {
-  return /^https?:\/\/(?:127\.0\.0\.1|localhost):5173\b/.test(window.location.href)
+function isExtensionDisabledByPage() {
+  return Boolean(
+    document.querySelector('meta[name="litfig-extension"][content="disabled"]') ||
+      document.documentElement?.dataset.litfigExtension === 'disabled' ||
+      document.body?.dataset.litfigExtension === 'disabled',
+  )
 }
 
 function removeExistingExtensionUi() {
@@ -121,7 +125,7 @@ function getAnalysisImageUrls(image) {
 }
 
 function isCandidateImage(image) {
-  if (isResearchFigureReaderApp()) return false
+  if (isExtensionDisabledByPage()) return false
   const rect = viewportRectForElement(image)
   if (!rect || rect.width < MIN_FIGURE_WIDTH || rect.height < MIN_FIGURE_HEIGHT) return false
   if (image.closest(`.${PANEL_ID}, .${BUTTON_CLASS}, .${OVERLAY_CLASS}`)) return false
@@ -1204,7 +1208,7 @@ function scheduleScan() {
 }
 
 removeExistingExtensionUi()
-if (!isResearchFigureReaderApp()) {
+if (!isExtensionDisabledByPage()) {
   restoreScrollFromHash()
   scanImages()
   void restoreSavedAnalysisFromHash()
