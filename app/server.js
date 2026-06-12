@@ -330,6 +330,7 @@ function createAnalysisStore(filePath = null) {
       arxivId: input.arxivId || '',
       sourceUrl: input.sourceUrl || '',
       pdfHash: input.pdfHash || '',
+      pdfDataUrl: input.pdfDataUrl || '',
       journal: input.journal || '',
       year: input.year || '',
     }
@@ -416,6 +417,11 @@ function createAnalysisStore(filePath = null) {
           return true
         })
         .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    },
+
+    async get(id) {
+      const records = await readRecords()
+      return records.find((record) => record.id === id) || null
     },
 
     async delete(id) {
@@ -1514,6 +1520,20 @@ app.get('/api/analysis', async (req, res) => {
       res,
       500,
       error instanceof Error ? error.message : 'Failed to list analysis records.',
+    )
+  }
+})
+
+app.get('/api/analysis/:id', async (req, res) => {
+  try {
+    const record = await analysisStore.get(req.params.id)
+    if (!record) return sendJsonError(res, 404, 'Analysis record not found.')
+    return res.json({ record })
+  } catch (error) {
+    return sendJsonError(
+      res,
+      500,
+      error instanceof Error ? error.message : 'Failed to get analysis record.',
     )
   }
 })

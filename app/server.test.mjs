@@ -65,6 +65,7 @@ test('analysis store saves and looks up records by document, figure, and fingerp
     paper: {
       title: 'Aging paper',
       doi: '10.1234/example',
+      pdfDataUrl: 'data:application/pdf;base64,PDF',
     },
     figure: {
       figureLabel: 'Fig. 2',
@@ -92,6 +93,7 @@ test('analysis store saves and looks up records by document, figure, and fingerp
   assert.equal(found.answer, '图像显示处理组降低。')
   assert.equal(found.annotations[0].label, 'a')
   assert.equal(found.paper.title, 'Aging paper')
+  assert.equal(found.paper.pdfDataUrl, 'data:application/pdf;base64,PDF')
   assert.equal(found.figure.figureLabel, 'Fig. 2')
   assert.equal(found.figure.imageDataUrl, 'data:image/png;base64,AAA')
   assert.equal(found.figure.locator.source, 'web-html')
@@ -118,6 +120,21 @@ test('analysis store deletes one record without deleting other records', async (
   assert.equal(deleted.id, first.id)
   assert.equal(records.length, 1)
   assert.equal(records[0].id, second.id)
+})
+
+test('analysis store gets a record by id', async () => {
+  const store = createAnalysisStore()
+  const saved = await store.create({
+    documentId: 'paper-get',
+    figureId: 'Fig. 4',
+    imageFingerprint: 'get-1',
+    answer: 'saved answer',
+  })
+
+  const found = await store.get(saved.id)
+
+  assert.equal(found.id, saved.id)
+  assert.equal(found.figureId, 'Fig. 4')
 })
 
 test('caption extraction stops before following body paragraphs with figure mentions', () => {

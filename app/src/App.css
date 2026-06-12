@@ -216,6 +216,26 @@
   background: #ffffff;
 }
 
+.saved-figure-replay {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  line-height: 0;
+}
+
+.saved-annotation-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid #d64c2f;
+  border-radius: 5px;
+  background: rgba(214, 76, 47, 0.08);
+  cursor: pointer;
+}
+
+.saved-annotation-box:hover .annotation-tooltip {
+  display: grid;
+}
+
 .record-detail header {
   display: flex;
   align-items: flex-start;

@@ -19,11 +19,17 @@ function removeExistingExtensionUi() {
 }
 
 function restoreScrollFromHash() {
-  const match = window.location.hash.match(/litfig-scroll=(\d+)/)
-  if (!match) return
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+  const scrollValue = params.get('litfig-scroll')
+  if (!scrollValue) return
   window.setTimeout(() => {
-    window.scrollTo({ top: Number(match[1]), behavior: 'smooth' })
+    window.scrollTo({ top: Number(scrollValue), behavior: 'smooth' })
   }, 300)
+}
+
+function getAnalysisIdFromHash() {
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+  return params.get('litfig-analysis') || ''
 }
 
 function sendMessage(message) {
@@ -213,6 +219,66 @@ function buildImageFingerprint(image, figureImage, context) {
       figureImage?.naturalHeight || '',
     ].join('|'),
   )
+}
+
+function findImageForSavedRecord(record) {
+  const savedImageUrl = record?.figure?.imageUrl || record?.figure?.locator?.imageUrl || record?.imageUrl || ''
+  const images = [...document.querySelectorAll('img')].filter(isCandidateImage)
+
+  if (savedImageUrl) {
+    const matched = images.find((image) => {
+      const source = getImageSourceUrl(image)
+      return source === savedImageUrl || source.includes(savedImageUrl) || savedImageUrl.includes(source)
+    })
+    if (matched) return matched
+  }
+
+  return images
+    .map((image) => ({ image, rect: viewportRectForElement(image) }))
+    .filter((entry) => entry.rect)
+    .sort((a, b) => b.rect.width * b.rect.height - a.rect.width * a.rect.height)[0]?.image
+}
+
+async function restoreSavedAnalysisFromHash() {
+  const analysisId = getAnalysisIdFromHash()
+  if (!analysisId) return
+
+  const response = await sendMessage({ type: 'get-analysis', id: analysisId })
+  if (!response?.ok || !response.payload?.record) {
+    renderErrorPanel(response?.payload?.error || '未找到历史解析记录')
+    return
+  }
+
+  const record = response.payload.record
+  const restore = () => {
+    const image = findImageForSavedRecord(record)
+    if (!image) return false
+    image.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
+    renderAnnotations({
+      image,
+      annotations: record.annotations || [],
+      mode: 'image-source',
+      screenshotRect: null,
+    })
+    renderResultPanel(
+      {
+        answer: record.answer || '',
+        sources: record.sources || [],
+        uncertainty: record.uncertainty || '',
+        annotations: record.annotations || [],
+        __analysisSource: record.figure?.imageUrl || record.imageUrl || '',
+        __context: record.context || null,
+      },
+      'image-source',
+      null,
+    )
+    return true
+  }
+
+  if (restore()) return
+  window.setTimeout(() => {
+    if (!restore()) renderErrorPanel('已找到历史解析，但当前页面没有定位到对应图片')
+  }, 1200)
 }
 
 function getPdfUrlFromPage() {
@@ -1135,6 +1201,7 @@ function scheduleScan() {
 removeExistingExtensionUi()
 restoreScrollFromHash()
 scanImages()
+void restoreSavedAnalysisFromHash()
 window.addEventListener('scroll', scheduleOverlayUpdate, { passive: true })
 window.addEventListener('resize', scheduleOverlayUpdate)
 

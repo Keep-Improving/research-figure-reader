@@ -105,6 +105,7 @@ type AnalysisRecord = {
     arxivId?: string
     sourceUrl?: string
     pdfHash?: string
+    pdfDataUrl?: string
     journal?: string
     year?: string
   }
@@ -588,15 +589,30 @@ function formatSavedAt(value: string) {
   return date.toLocaleString()
 }
 
-function buildStableUrlWithScroll(url: string, scrollY?: number | null) {
+function buildStableUrlWithScroll(url: string, scrollY?: number | null, analysisId?: string) {
   if (!url) return ''
-  if (!Number.isFinite(Number(scrollY))) return url
   try {
     const parsed = new URL(url)
-    parsed.hash = `litfig-scroll=${Math.max(0, Math.round(Number(scrollY)))}`
+    const params = new URLSearchParams()
+    if (Number.isFinite(Number(scrollY))) {
+      params.set('litfig-scroll', String(Math.max(0, Math.round(Number(scrollY)))))
+    }
+    if (analysisId) {
+      params.set('litfig-analysis', analysisId)
+    }
+    parsed.hash = params.toString()
     return parsed.href
   } catch {
     return url
+  }
+}
+
+function analysisRecordToResult(record: AnalysisRecord): AnalysisResult {
+  return {
+    answer: record.answer || '',
+    sources: Array.isArray(record.sources) ? record.sources : [],
+    uncertainty: record.uncertainty || '',
+    annotations: Array.isArray(record.annotations) ? record.annotations : [],
   }
 }
 
@@ -704,6 +720,7 @@ function App() {
           title: inferPaperTitle(visual),
           sourceUrl: '',
           pdfHash: visual.originalDataUrl ? hashString(visual.originalDataUrl.slice(0, 2000)) : '',
+          pdfDataUrl: pdfState ? visual.originalDataUrl : '',
         },
         figure: {
           figureLabel: figureId,
@@ -760,6 +777,39 @@ function App() {
       setLibraryStatus('已删除记录')
     } catch (error) {
       setLibraryStatus(error instanceof Error ? error.message : '删除失败')
+    }
+  }
+
+  const openSavedPdfInWorkspace = async (record: AnalysisRecord) => {
+    const pdfDataUrl = record.paper?.pdfDataUrl
+    if (!pdfDataUrl) return
+    setViewMode('reader')
+    setIsLoadingFile(true)
+    resetView()
+    try {
+      const base64 = pdfDataUrl.split(',')[1]
+      const binary = window.atob(base64)
+      const bytes = new Uint8Array(binary.length)
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index)
+      }
+      const loadingTask = getDocument({ data: bytes })
+      const documentProxy = await loadingTask.promise
+      clearPdfContext()
+      await renderAndSetPdfPage(
+        documentProxy,
+        Math.max(1, Number(record.figure?.pageNumber ?? record.figure?.locator?.pdfPage ?? 1)),
+        record.paper?.title || 'saved-paper.pdf',
+        documentProxy.numPages,
+        pdfDataUrl,
+      )
+      setResult(analysisRecordToResult(record))
+      setCaption(record.figure?.captionText || '')
+      setStatus('已打开历史 PDF，并恢复保存的解析结果')
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '打开历史 PDF 失败')
+    } finally {
+      setIsLoadingFile(false)
     }
   }
 
@@ -1215,6 +1265,7 @@ function App() {
   const selectedRecordWebUrl = buildStableUrlWithScroll(
     selectedRecordPageUrl,
     selectedRecord?.figure?.locator?.scrollY,
+    selectedRecord?.id,
   )
   const selectedRecordPdfUrl = buildPdfPageUrl(selectedRecordImageUrl || selectedRecordPageUrl, selectedRecordPdfPage)
   const selectedRecordMatchesCurrentPdf =
@@ -1447,11 +1498,40 @@ function App() {
                     {selectedRecord.figure?.imageDataUrl || selectedRecord.figure?.thumbnailDataUrl ? (
                       <section>
                         <h3>保存的图片</h3>
-                        <img
-                          className="saved-figure-image"
-                          src={selectedRecord.figure.imageDataUrl || selectedRecord.figure.thumbnailDataUrl}
-                          alt={selectedRecord.figure.figureLabel || selectedRecord.figureId || 'saved figure'}
-                        />
+                        <div className="saved-figure-replay">
+                          <img
+                            className="saved-figure-image"
+                            src={selectedRecord.figure.imageDataUrl || selectedRecord.figure.thumbnailDataUrl}
+                            alt={selectedRecord.figure.figureLabel || selectedRecord.figureId || 'saved figure'}
+                          />
+                          {selectedRecord.annotations.map((annotation, index) => {
+                            const box = clampAnnotationBox(annotation.bbox)
+                            return (
+                              <button
+                                key={`${selectedRecord.id}-replay-${index}`}
+                                type="button"
+                                className="saved-annotation-box"
+                                style={{
+                                  left: `${box.x / 10}%`,
+                                  top: `${box.y / 10}%`,
+                                  width: `${box.width / 10}%`,
+                                  height: `${box.height / 10}%`,
+                                }}
+                              >
+                                <span className="annotation-number">{index + 1}</span>
+                                <span className="annotation-tooltip">
+                                  <strong>{annotation.label}</strong>
+                                  <span>看什么：{annotation.what}</span>
+                                  <span>怎么看：{annotation.howToRead}</span>
+                                  <span>说明：{annotation.meaning}</span>
+                                  <small>
+                                    {annotation.evidenceType} · {Math.round(annotation.confidence * 100)}%
+                                  </small>
+                                </span>
+                              </button>
+                            )
+                          })}
+                        </div>
                       </section>
                     ) : null}
                     <section>
@@ -1489,8 +1569,13 @@ function App() {
                           >
                             跳到当前 PDF 第 {selectedRecordPdfPage} 页
                           </button>
-                        ) : selectedRecord?.paper?.pdfHash ? (
+                        ) : selectedRecord?.paper?.pdfHash && !selectedRecord.paper?.pdfDataUrl ? (
                           <span className="muted">重新上传同一 PDF 后可跳到保存页码。</span>
+                        ) : null}
+                        {selectedRecord?.paper?.pdfDataUrl ? (
+                          <button type="button" onClick={() => void openSavedPdfInWorkspace(selectedRecord)}>
+                            在网站中打开历史 PDF 第 {selectedRecordPdfPage ?? 1} 页
+                          </button>
                         ) : null}
                         {selectedRecordImageUrl.startsWith('blob:') ? (
                           <span className="muted">该 PDF 使用临时 blob URL，不能稳定回溯。</span>

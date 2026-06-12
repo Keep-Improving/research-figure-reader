@@ -114,6 +114,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true
   }
 
+  if (message?.type === 'get-analysis') {
+    fetch(`${API_BASE}/api/analysis/${encodeURIComponent(message.id)}`)
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null)
+        sendResponse({ ok: response.ok, status: response.status, payload })
+      })
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          status: 0,
+          payload: { error: error instanceof Error ? error.message : '读取历史解析失败' },
+        })
+      })
+    return true
+  }
+
   if (message?.type === 'analyze-figure') {
     fetch(`${API_BASE}/api/analyze-image`, {
       method: 'POST',
