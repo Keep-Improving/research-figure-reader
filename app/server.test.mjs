@@ -62,6 +62,20 @@ test('analysis store saves and looks up records by document, figure, and fingerp
     documentId: 'paper-1',
     figureId: 'Fig. 2',
     imageFingerprint: 'abc123',
+    paper: {
+      title: 'Aging paper',
+      doi: '10.1234/example',
+    },
+    figure: {
+      figureLabel: 'Fig. 2',
+      captionText: 'Fig. 2 | Test caption.',
+      imageDataUrl: 'data:image/png;base64,AAA',
+      thumbnailDataUrl: 'data:image/png;base64,BBB',
+      locator: {
+        source: 'web-html',
+        pageUrl: 'https://example.org/paper',
+      },
+    },
     source: 'browser-extension',
     answer: '图像显示处理组降低。',
     annotations: [{ label: 'a', bbox: { x: 10, y: 10, width: 100, height: 100 } }],
@@ -77,6 +91,33 @@ test('analysis store saves and looks up records by document, figure, and fingerp
   assert.equal(found.version, 1)
   assert.equal(found.answer, '图像显示处理组降低。')
   assert.equal(found.annotations[0].label, 'a')
+  assert.equal(found.paper.title, 'Aging paper')
+  assert.equal(found.figure.figureLabel, 'Fig. 2')
+  assert.equal(found.figure.imageDataUrl, 'data:image/png;base64,AAA')
+  assert.equal(found.figure.locator.source, 'web-html')
+})
+
+test('analysis store deletes one record without deleting other records', async () => {
+  const store = createAnalysisStore()
+  const first = await store.create({
+    documentId: 'paper-delete',
+    figureId: 'Fig. 1',
+    imageFingerprint: 'delete-1',
+    answer: 'first',
+  })
+  const second = await store.create({
+    documentId: 'paper-delete',
+    figureId: 'Fig. 2',
+    imageFingerprint: 'delete-2',
+    answer: 'second',
+  })
+
+  const deleted = await store.delete(first.id)
+  const records = await store.list({ documentId: 'paper-delete' })
+
+  assert.equal(deleted.id, first.id)
+  assert.equal(records.length, 1)
+  assert.equal(records[0].id, second.id)
 })
 
 test('caption extraction stops before following body paragraphs with figure mentions', () => {

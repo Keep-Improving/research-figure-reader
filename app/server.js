@@ -321,6 +321,42 @@ function createAnalysisStore(filePath = null) {
     await fs.writeFile(filePath, `${JSON.stringify({ records }, null, 2)}\n`, 'utf8')
   }
 
+  function normalizePaperSnapshot(input = {}) {
+    return {
+      title: input.title || '',
+      doi: input.doi || '',
+      pmid: input.pmid || '',
+      pmcid: input.pmcid || '',
+      arxivId: input.arxivId || '',
+      sourceUrl: input.sourceUrl || '',
+      pdfHash: input.pdfHash || '',
+      journal: input.journal || '',
+      year: input.year || '',
+    }
+  }
+
+  function normalizeFigureSnapshot(input = {}) {
+    return {
+      figureLabel: input.figureLabel || '',
+      captionText: input.captionText || '',
+      captionSource: input.captionSource || '',
+      pageNumber: Number.isFinite(Number(input.pageNumber)) ? Number(input.pageNumber) : null,
+      imageUrl: input.imageUrl || '',
+      imageFingerprint: input.imageFingerprint || '',
+      thumbnailDataUrl: input.thumbnailDataUrl || '',
+      imageDataUrl: input.imageDataUrl || '',
+      locator: {
+        source: input.locator?.source || 'web-app-image',
+        pageUrl: input.locator?.pageUrl || '',
+        pdfPage: Number.isFinite(Number(input.locator?.pdfPage)) ? Number(input.locator.pdfPage) : null,
+        imageCssSelector: input.locator?.imageCssSelector || '',
+        imageUrl: input.locator?.imageUrl || '',
+        scrollY: Number.isFinite(Number(input.locator?.scrollY)) ? Number(input.locator.scrollY) : null,
+        bboxOnPage: input.locator?.bboxOnPage || null,
+      },
+    }
+  }
+
   return {
     async create(input = {}) {
       const records = await readRecords()
@@ -338,6 +374,8 @@ function createAnalysisStore(filePath = null) {
         figureId: input.figureId || null,
         imageFingerprint: input.imageFingerprint || null,
         imageUrl: input.imageUrl || null,
+        paper: normalizePaperSnapshot(input.paper),
+        figure: normalizeFigureSnapshot(input.figure),
         pageUrl: input.pageUrl || '',
         source: input.source || 'web-app',
         model: input.model || model,
@@ -378,6 +416,15 @@ function createAnalysisStore(filePath = null) {
           return true
         })
         .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    },
+
+    async delete(id) {
+      const records = await readRecords()
+      const index = records.findIndex((record) => record.id === id)
+      if (index < 0) return null
+      const [deleted] = records.splice(index, 1)
+      await writeRecords(records)
+      return deleted
     },
   }
 }
@@ -1467,6 +1514,20 @@ app.get('/api/analysis', async (req, res) => {
       res,
       500,
       error instanceof Error ? error.message : 'Failed to list analysis records.',
+    )
+  }
+})
+
+app.delete('/api/analysis/:id', async (req, res) => {
+  try {
+    const deleted = await analysisStore.delete(req.params.id)
+    if (!deleted) return sendJsonError(res, 404, 'Analysis record not found.')
+    return res.json({ deleted })
+  } catch (error) {
+    return sendJsonError(
+      res,
+      500,
+      error instanceof Error ? error.message : 'Failed to delete analysis record.',
     )
   }
 })

@@ -91,6 +91,55 @@ type PdfState = {
   currentPage: number
 }
 
+type AnalysisRecord = {
+  id: string
+  documentId: string | null
+  figureId: string | null
+  imageFingerprint: string | null
+  imageUrl: string | null
+  paper?: {
+    title?: string
+    doi?: string
+    pmid?: string
+    pmcid?: string
+    arxivId?: string
+    sourceUrl?: string
+    pdfHash?: string
+    journal?: string
+    year?: string
+  }
+  figure?: {
+    figureLabel?: string
+    captionText?: string
+    captionSource?: string
+    pageNumber?: number | null
+    imageUrl?: string
+    imageFingerprint?: string
+    thumbnailDataUrl?: string
+    imageDataUrl?: string
+    locator?: {
+      source?: string
+      pageUrl?: string
+      pdfPage?: number | null
+      imageCssSelector?: string
+      imageUrl?: string
+      scrollY?: number | null
+      bboxOnPage?: Selection | null
+    }
+  }
+  pageUrl: string
+  source: string
+  model: string
+  answer: string
+  uncertainty: string
+  sources: string[]
+  annotations: FigureAnnotation[]
+  context: unknown
+  version: number
+  createdAt: string
+  updatedAt: string
+}
+
 const quickQuestions = [
   '这张图主要说明什么？',
   '请解释每个 panel 的含义',
@@ -507,6 +556,38 @@ async function parseApiResponse(response: Response) {
   }
 }
 
+async function createThumbnailDataUrl(dataUrl: string, maxWidth = 360): Promise<string> {
+  const image = await loadImageDataUrl(dataUrl)
+  const scale = Math.min(1, maxWidth / image.naturalWidth)
+  const canvas = window.document.createElement('canvas')
+  const context = canvas.getContext('2d')
+  if (!context) return dataUrl
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale))
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale))
+  context.drawImage(image, 0, 0, canvas.width, canvas.height)
+  return canvas.toDataURL('image/jpeg', 0.78)
+}
+
+function inferPaperTitle(visual: VisualSource | null) {
+  if (!visual) return ''
+  return visual.kind === 'pdf' ? visual.name.replace(/\.pdf$/i, '') : visual.name
+}
+
+function hashString(value: string) {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16)
+}
+
+function formatSavedAt(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString()
+}
+
 function App() {
   const imageRef = useRef<HTMLImageElement | null>(null)
   const lastInspectedRef = useRef('')
@@ -531,6 +612,13 @@ function App() {
   const [isInspectingPdf, setIsInspectingPdf] = useState(false)
   const [isIndexingPdf, setIsIndexingPdf] = useState(false)
   const [pageInput, setPageInput] = useState('1')
+  const [viewMode, setViewMode] = useState<'reader' | 'library'>('reader')
+  const [analysisRecords, setAnalysisRecords] = useState<AnalysisRecord[]>([])
+  const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null)
+  const [libraryQuery, setLibraryQuery] = useState('')
+  const [isLoadingLibrary, setIsLoadingLibrary] = useState(false)
+  const [libraryStatus, setLibraryStatus] = useState('')
+  const [saveStatus, setSaveStatus] = useState('')
 
   const resetView = () => {
     setSelection(null)
@@ -548,6 +636,106 @@ function App() {
     setFigureQuery('')
     setCaption('')
     lastInspectedRef.current = ''
+  }
+
+  const loadAnalysisLibrary = async () => {
+    setIsLoadingLibrary(true)
+    setLibraryStatus('正在读取解析库')
+    try {
+      const response = await fetch('/api/analysis')
+      const { ok, payload } = await parseApiResponse(response)
+      if (!ok) throw new Error(payload?.error || '读取解析库失败')
+      const records = Array.isArray(payload?.records) ? payload.records : []
+      setAnalysisRecords(records)
+      setSelectedRecordId((current) => current ?? records[0]?.id ?? null)
+      setLibraryStatus(records.length > 0 ? `已读取 ${records.length} 条解析记录` : '暂无已保存解析')
+    } catch (error) {
+      setLibraryStatus(error instanceof Error ? error.message : '读取解析库失败')
+    } finally {
+      setIsLoadingLibrary(false)
+    }
+  }
+
+  const saveCurrentAnalysis = async () => {
+    if (!result || !visual) return
+    setSaveStatus('正在保存...')
+    try {
+      const imageDataUrl = visual.dataUrl
+      const thumbnailDataUrl = await createThumbnailDataUrl(imageDataUrl)
+      const figureId = selectedFigure?.figureLabel
+        ? `Fig. ${selectedFigure.figureLabel}`
+        : pdfInspect?.figureLabel
+          ? `Fig. ${pdfInspect.figureLabel}`
+          : pdfState
+            ? `PDF page ${pdfState.currentPage}`
+            : visual.name
+      const captionText = caption || selectedFigure?.captionCandidates[0]?.text || pdfInspect?.captionCandidates[0]?.text || ''
+      const body = {
+        documentId: hashString(`${visual.name}:${visual.originalDataUrl?.slice(0, 80) || visual.dataUrl.slice(0, 80)}`),
+        figureId,
+        imageFingerprint: hashString(`${visual.name}:${figureId}:${caption}:${visual.dataUrl.slice(0, 120)}`),
+        imageUrl: null,
+        paper: {
+          title: inferPaperTitle(visual),
+          sourceUrl: '',
+          pdfHash: visual.originalDataUrl ? hashString(visual.originalDataUrl.slice(0, 2000)) : '',
+        },
+        figure: {
+          figureLabel: figureId,
+          captionText,
+          captionSource: selectedFigure ? 'pdf-index' : pdfInspect ? 'pdf-inspect' : caption ? 'manual' : '',
+          pageNumber: pdfState?.currentPage ?? null,
+          imageUrl: '',
+          imageFingerprint: hashString(`${visual.name}:${figureId}:${imageDataUrl.slice(0, 180)}`),
+          imageDataUrl,
+          thumbnailDataUrl,
+          locator: {
+            source: pdfState ? 'web-app-pdf' : 'web-app-image',
+            pdfPage: pdfState?.currentPage ?? null,
+          },
+        },
+        pageUrl: '',
+        source: 'web-app',
+        answer: result.answer,
+        uncertainty: result.uncertainty,
+        sources: result.sources,
+        annotations: result.annotations,
+        context: {
+          caption,
+          selectedFigure,
+          bodyEvidence: bodyEvidenceList,
+          pdfPage: pdfState?.currentPage ?? null,
+          visualName: visual.name,
+        },
+      }
+      const response = await fetch('/api/analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const { ok, payload } = await parseApiResponse(response)
+      if (!ok) throw new Error(payload?.error || '保存失败')
+      setSaveStatus(`已保存：版本 ${payload.version || 1}`)
+      await loadAnalysisLibrary()
+    } catch (error) {
+      setSaveStatus(error instanceof Error ? error.message : '保存失败')
+    }
+  }
+
+  const deleteAnalysisRecord = async (record: AnalysisRecord) => {
+    const confirmed = window.confirm(`删除这条解析记录？\n${record.figureId || record.id}`)
+    if (!confirmed) return
+    setLibraryStatus('正在删除记录')
+    try {
+      const response = await fetch(`/api/analysis/${encodeURIComponent(record.id)}`, { method: 'DELETE' })
+      const { ok, payload } = await parseApiResponse(response)
+      if (!ok) throw new Error(payload?.error || '删除失败')
+      setAnalysisRecords((records) => records.filter((item) => item.id !== record.id))
+      setSelectedRecordId((current) => (current === record.id ? null : current))
+      setLibraryStatus('已删除记录')
+    } catch (error) {
+      setLibraryStatus(error instanceof Error ? error.message : '删除失败')
+    }
   }
 
   const setImageVisual = async (file: File) => {
@@ -971,6 +1159,27 @@ function App() {
   const topBodyEvidence = selectedFigure?.bodyEvidence[0] ?? pdfInspect?.bodyEvidence[0]
   const bodyEvidenceList = selectedFigure?.bodyEvidence ?? pdfInspect?.bodyEvidence ?? []
   const annotations = result?.annotations ?? []
+  const filteredRecords = analysisRecords.filter((record) => {
+    const query = libraryQuery.trim().toLowerCase()
+    if (!query) return true
+    return [
+      record.figureId,
+      record.answer,
+      record.uncertainty,
+      record.pageUrl,
+      record.source,
+      record.model,
+      JSON.stringify(record.context ?? ''),
+    ]
+      .join(' ')
+      .toLowerCase()
+      .includes(query)
+  })
+  const selectedRecord =
+    filteredRecords.find((record) => record.id === selectedRecordId) ??
+    analysisRecords.find((record) => record.id === selectedRecordId) ??
+    filteredRecords[0] ??
+    null
 
   return (
     <main className="app-shell">
@@ -979,6 +1188,27 @@ function App() {
           <div>
             <h1>科研图片理解</h1>
             <p>{status}</p>
+          </div>
+          <div className="view-switch" aria-label="工作区切换">
+            <button
+              type="button"
+              className={viewMode === 'reader' ? 'active' : ''}
+              onClick={() => setViewMode('reader')}
+            >
+              当前解析
+            </button>
+            <button
+              type="button"
+              className={viewMode === 'library' ? 'active' : ''}
+              onClick={() => {
+                setViewMode('library')
+                if (analysisRecords.length === 0 && !isLoadingLibrary) {
+                  void loadAnalysisLibrary()
+                }
+              }}
+            >
+              解析库
+            </button>
           </div>
           <div className="upload-actions">
             <label className="file-button">
@@ -1010,6 +1240,7 @@ function App() {
           </div>
         </header>
 
+        {viewMode === 'reader' ? (
         <div className={`figure-stage ${visual ? 'has-image' : ''}`}>
           {pdfState ? (
             <div className="pdf-toolbar">
@@ -1114,9 +1345,152 @@ function App() {
             )}
           </div>
         </div>
+        ) : (
+          <div className="library-stage">
+            <div className="library-toolbar">
+              <div>
+                <h2>解析库</h2>
+                <p>{libraryStatus || '查看已保存的插件和网站解析结果'}</p>
+              </div>
+              <button type="button" className="nav-button" onClick={() => void loadAnalysisLibrary()}>
+                {isLoadingLibrary ? '读取中' : '刷新'}
+              </button>
+            </div>
+            <input
+              className="figure-search"
+              value={libraryQuery}
+              onChange={(event) => setLibraryQuery(event.target.value)}
+              placeholder="搜索 figure、回答、来源或上下文"
+            />
+            <div className="library-layout">
+              <div className="record-list">
+                {filteredRecords.length > 0 ? (
+                  filteredRecords.map((record) => (
+                    <button
+                      key={record.id}
+                      type="button"
+                      className={record.id === selectedRecord?.id ? 'record-item active' : 'record-item'}
+                      onClick={() => setSelectedRecordId(record.id)}
+                    >
+                      {record.figure?.thumbnailDataUrl ? (
+                        <img className="record-thumb" src={record.figure.thumbnailDataUrl} alt="" />
+                      ) : null}
+                      <strong>
+                        {record.paper?.title ? `${record.paper.title} · ` : ''}
+                        {record.figure?.figureLabel || record.figureId || '待命名图'}
+                      </strong>
+                      {record.figure?.captionText ? <span>{record.figure.captionText.slice(0, 120)}</span> : null}
+                      <span>{record.answer.slice(0, 120) || '无回答摘要'}</span>
+                      <small>
+                        {record.source} · {formatSavedAt(record.createdAt)}
+                      </small>
+                    </button>
+                  ))
+                ) : (
+                  <p className="muted">没有匹配的保存记录。</p>
+                )}
+              </div>
+              <div className="record-detail">
+                {selectedRecord ? (
+                  <>
+                    <header>
+                      <div>
+                        <h2>{selectedRecord.figure?.figureLabel || selectedRecord.figureId || '待命名图'}</h2>
+                        {selectedRecord.paper?.title ? <p>{selectedRecord.paper.title}</p> : null}
+                        <p className="muted">
+                          {selectedRecord.source} · {selectedRecord.model} · 版本 {selectedRecord.version}
+                        </p>
+                      </div>
+                      <button type="button" className="danger-button" onClick={() => void deleteAnalysisRecord(selectedRecord)}>
+                        删除
+                      </button>
+                    </header>
+                    {selectedRecord.figure?.imageDataUrl || selectedRecord.figure?.thumbnailDataUrl ? (
+                      <section>
+                        <h3>保存的图片</h3>
+                        <img
+                          className="saved-figure-image"
+                          src={selectedRecord.figure.imageDataUrl || selectedRecord.figure.thumbnailDataUrl}
+                          alt={selectedRecord.figure.figureLabel || selectedRecord.figureId || 'saved figure'}
+                        />
+                      </section>
+                    ) : null}
+                    <section>
+                      <h3>来源定位</h3>
+                      <p className="muted">
+                        文献：{selectedRecord.paper?.title || '未记录'}；
+                        Figure：{selectedRecord.figure?.figureLabel || selectedRecord.figureId || '待命名'}；
+                        页码：{selectedRecord.figure?.pageNumber ?? selectedRecord.figure?.locator?.pdfPage ?? '未记录'}；
+                        来源：{selectedRecord.figure?.locator?.source || selectedRecord.source}
+                      </p>
+                      {selectedRecord.figure?.captionText ? <p>{selectedRecord.figure.captionText}</p> : null}
+                    </section>
+                    <section>
+                      <h3>短结论</h3>
+                      <p>{selectedRecord.answer || '无回答内容'}</p>
+                    </section>
+                    <section>
+                      <h3>不确定点</h3>
+                      <p>{selectedRecord.uncertainty || '未记录'}</p>
+                    </section>
+                    <section>
+                      <h3>依据</h3>
+                      {selectedRecord.sources.length > 0 ? (
+                        <ul>
+                          {selectedRecord.sources.map((source) => (
+                            <li key={source}>{source}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="muted">未记录来源依据。</p>
+                      )}
+                    </section>
+                    <section>
+                      <h3>图上标注</h3>
+                      {selectedRecord.annotations.length > 0 ? (
+                        <div className="annotation-list">
+                          {selectedRecord.annotations.map((annotation, index) => (
+                            <div key={`${selectedRecord.id}-${index}`} className="annotation-detail">
+                              <strong>
+                                {index + 1}. {annotation.label}
+                              </strong>
+                              <span>看什么：{annotation.what}</span>
+                              <span>怎么看：{annotation.howToRead}</span>
+                              <span>说明：{annotation.meaning}</span>
+                              <small>
+                                bbox: {Math.round(annotation.bbox.x)}, {Math.round(annotation.bbox.y)},{' '}
+                                {Math.round(annotation.bbox.width)} x {Math.round(annotation.bbox.height)}
+                              </small>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="muted">未保存标注框。</p>
+                      )}
+                    </section>
+                    <section>
+                      <h3>上下文</h3>
+                      <pre className="context-json">{JSON.stringify(selectedRecord.context, null, 2)}</pre>
+                    </section>
+                  </>
+                ) : (
+                  <p className="muted">选择一条记录查看详情。</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </section>
 
       <aside className="inspector">
+        {viewMode === 'library' ? (
+          <div className="panel">
+            <h2>解析库说明</h2>
+            <p className="muted">这里读取本地后端保存的真实记录。插件和网站保存的结果会合并显示。</p>
+            <p className="muted">删除只作用于单条记录，需要确认；当前版本还没有批量删除和图片历史重放。</p>
+          </div>
+        ) : (
+          <>
         {pdfIndex ? (
           <div className="panel">
             <h2>全文图谱</h2>
@@ -1228,6 +1602,10 @@ function App() {
           <h2>解释</h2>
           {result ? (
             <>
+              <button type="button" onClick={() => void saveCurrentAnalysis()}>
+                保存本次解读
+              </button>
+              {saveStatus ? <p className="muted">{saveStatus}</p> : null}
               <section>
                 <h3>短结论</h3>
                 <p>{result.answer}</p>
@@ -1283,6 +1661,8 @@ function App() {
             <p className="muted">结果会显示在这里。当前解析会调用真实模型，不再返回模拟响应。</p>
           )}
         </div>
+          </>
+        )}
       </aside>
     </main>
   )

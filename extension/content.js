@@ -179,6 +179,18 @@ function hashString(value) {
   return (hash >>> 0).toString(16)
 }
 
+async function createThumbnailDataUrl(dataUrl, maxWidth = 360) {
+  const image = await loadDataUrl(dataUrl)
+  const scale = Math.min(1, maxWidth / image.naturalWidth)
+  const canvas = document.createElement('canvas')
+  const context = canvas.getContext('2d')
+  if (!context) return dataUrl
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale))
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale))
+  context.drawImage(image, 0, 0, canvas.width, canvas.height)
+  return canvas.toDataURL('image/jpeg', 0.78)
+}
+
 function buildDocumentId(context) {
   return context?.documentId || hashString(`${location.origin}${location.pathname}:${document.title}`)
 }
@@ -887,11 +899,35 @@ async function analyzeImage(image) {
       response.payload?.annotations || [],
     )
     const payload = response.payload || {}
+    const thumbnailDataUrl = await createThumbnailDataUrl(figureImage.dataUrl)
+    const figureLabel = context.figureLabel ? `Fig. ${context.figureLabel}` : ''
     const saveRecord = {
       documentId: buildDocumentId(context),
-      figureId: context.figureLabel ? `Fig. ${context.figureLabel}` : null,
+      figureId: figureLabel || null,
       imageFingerprint: buildImageFingerprint(image, figureImage, context),
       imageUrl: figureImage.sourceUrl || image.currentSrc || image.src || '',
+      paper: {
+        title: document.title || '',
+        sourceUrl: window.location.href,
+      },
+      figure: {
+        figureLabel,
+        captionText: context.selectedCaption || '',
+        captionSource: context.captionSource || '',
+        pageNumber: context.currentPage || null,
+        imageUrl: figureImage.sourceUrl || image.currentSrc || image.src || '',
+        imageFingerprint: buildImageFingerprint(image, figureImage, context),
+        imageDataUrl: figureImage.dataUrl,
+        thumbnailDataUrl,
+        locator: {
+          source: context.sourceType === 'pdf' ? 'browser-pdf' : 'web-html',
+          pageUrl: window.location.href,
+          pdfPage: context.currentPage || null,
+          imageUrl: figureImage.sourceUrl || image.currentSrc || image.src || '',
+          scrollY: window.scrollY,
+          bboxOnPage: freshRect,
+        },
+      },
       pageUrl: window.location.href,
       source: 'browser-extension',
       answer: payload.answer || '',
@@ -965,11 +1001,35 @@ async function analyzeVisiblePdfPage() {
 
     const annotations = await refineGridLikeAnnotations(imageDataUrl, response.payload?.annotations || [])
     const payload = response.payload || {}
+    const thumbnailDataUrl = await createThumbnailDataUrl(imageDataUrl)
+    const figureLabel = context.figureLabel ? `Fig. ${context.figureLabel}` : `PDF page ${pdfInfo.currentPage}`
     const saveRecord = {
       documentId: buildDocumentId(context),
-      figureId: context.figureLabel ? `Fig. ${context.figureLabel}` : `PDF page ${pdfInfo.currentPage}`,
+      figureId: figureLabel,
       imageFingerprint: hashString(`${window.location.href}|${pdfInfo.currentPage}|${context.selectedCaption || ''}`),
       imageUrl: pdfInfo.pdfUrl || '',
+      paper: {
+        title: document.title || '',
+        sourceUrl: window.location.href,
+      },
+      figure: {
+        figureLabel,
+        captionText: context.selectedCaption || '',
+        captionSource: context.captionSource || '',
+        pageNumber: pdfInfo.currentPage,
+        imageUrl: pdfInfo.pdfUrl || '',
+        imageFingerprint: hashString(`${window.location.href}|${pdfInfo.currentPage}|${context.selectedCaption || ''}`),
+        imageDataUrl,
+        thumbnailDataUrl,
+        locator: {
+          source: 'browser-pdf',
+          pageUrl: window.location.href,
+          pdfPage: pdfInfo.currentPage,
+          imageUrl: pdfInfo.pdfUrl || '',
+          scrollY: window.scrollY,
+          bboxOnPage: rect,
+        },
+      },
       pageUrl: window.location.href,
       source: 'browser-extension',
       answer: payload.answer || '',

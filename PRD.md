@@ -236,8 +236,102 @@
 状态：部分完成
 
 - 保存解析结果：已完成 MVP，后端提供本地 JSON store 和 `/api/analysis` / `/api/analysis/lookup`，插件结果面板提供“保存本次解读”
+- 网站端解析库：已完成 MVP。独立网站提供“当前解析/解析库”切换，能查看、搜索、打开和删除插件/网站保存的结果；新保存记录会保存文献信息、figure 信息、locator 和图片 data URL / 缩略图。
 - 导出 Markdown
 - 导出结构化 JSON
+
+#### M5.1 网站端解析库设计
+
+目标：用户不需要打开 JSON 文件，也不需要每次重新解析；在网站内可以查看、搜索、打开和删除已保存的图片解析结果。
+
+入口：
+
+- 顶部工具区增加分段切换：“当前解析 / 解析库”。
+- 默认仍进入“当前解析”，不打断上传图片和 PDF 的主流程。
+- “解析库”视图读取后端 `/api/analysis` 的真实记录，不显示模拟内容。
+
+列表：
+
+- 左侧或主区域显示保存记录列表，按 `createdAt` 倒序。
+- 每条记录展示 figure、来源、模型、保存时间、回答摘要。
+- 支持按 `figureId`、`answer`、`pageUrl`、caption/context 文本搜索。
+
+详情：
+
+- 打开记录后显示完整回答、不确定点、来源依据、caption/body context、annotation 列表。
+- 如果记录里有 `imageUrl` 或页面 URL，显示可点击来源；如果只有历史文本，不伪造图片预览。
+- annotation bbox 暂时以结构化 JSON/列表展示；后续再做历史图像重放。
+
+管理：
+
+- 支持单条删除，删除前必须确认。
+- 暂不做批量删除，避免误删并符合 AGENTS.md 约束。
+- 删除接口采用软删除或从本地 JSON store 中移除；第一版用真实 API，不做前端假删除。
+
+保存：
+
+- 网站端当前解析结果也应提供“保存本次解读”按钮，写入同一个 `/api/analysis`。
+- 插件和网站保存的记录在解析库中合并展示，通过 `source` 区分来源。
+
+#### M5.2 文献、图片与回溯定位设计
+
+当前解析库不能只保存“解析文本”。每条记录必须能回答三个问题：
+
+1. 这是哪篇文献？
+2. 这是这篇文献里的哪张图？
+3. 当时 AI 看的是哪张具体图片？
+
+因此保存结构需要从单层 `AnalysisRecord` 扩展为逻辑上的三层，即使第一版仍存放在同一个 JSON 文件中：
+
+```ts
+type PaperSnapshot = {
+  title: string
+  doi?: string
+  pmid?: string
+  pmcid?: string
+  arxivId?: string
+  sourceUrl?: string
+  pdfHash?: string
+  journal?: string
+  year?: string
+}
+
+type FigureSnapshot = {
+  figureLabel?: string
+  captionText?: string
+  captionSource?: string
+  pageNumber?: number
+  imageUrl?: string
+  imageFingerprint?: string
+  thumbnailDataUrl?: string
+  imageDataUrl?: string
+  locator: {
+    source: 'web-html' | 'browser-pdf' | 'web-app-pdf' | 'web-app-image'
+    pageUrl?: string
+    pdfPage?: number
+    imageCssSelector?: string
+    imageUrl?: string
+    scrollY?: number
+    bboxOnPage?: { x: number; y: number; width: number; height: number }
+  }
+}
+```
+
+第一版实现策略：
+
+- 不立即拆成多张数据库表，先把 `paper` 和 `figure` 作为快照字段保存在 `AnalysisRecord` 里，后续迁移 SQLite 时再正规化。
+- 保存图片本身：必须保存 `figure.imageDataUrl` 或至少 `figure.thumbnailDataUrl`，这样解析库不依赖原网页图片 URL 是否还可访问。
+- 插件保存网页图片时保存实际分析用图片 `imageDataUrl`，同时保存原网页 `imageUrl`、`pageUrl`、滚动位置和 caption/context。
+- 网站上传 PDF 时保存当前分析图像或裁剪图像 `imageDataUrl`，并保存 `pdfPage`、`figureLabel`、caption 和正文证据。
+- 网站上传普通图片时保存上传图片 `imageDataUrl`，`locator.source = 'web-app-image'`。
+
+解析库展示：
+
+- 列表优先显示 `paper.title`，其次显示 `figure.figureLabel`，再显示保存时间和来源。
+- 如果 figure label 缺失，不显示“未命名 figure”作为主要标题，而显示“待命名图”并展示缩略图、caption 摘要和文献标题。
+- 详情页必须显示保存的图片/缩略图，作为回溯依据。
+- 提供“来源”区：网页 URL、图片 URL、PDF 页码、caption 来源。
+- 后续增加“重命名/关联 Figure”功能，把待命名图手动关联到 `Figure 1` 等标签。
 
 ### M6：真实阅读环境集成
 
