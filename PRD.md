@@ -388,6 +388,69 @@ type FigureSnapshot = {
 - 如果只保存了 `pdfHash` 而没有 `pdfDataUrl`，才显示“重新上传同一 PDF 后可跳转到保存页码”。
 - 对网站上传 PDF 的历史记录，点击“在网站中打开历史 PDF 第 X 页”后应同时恢复保存的回答、红框和图上解释，而不是只跳页。
 
+## 11. 分享与部署设计
+
+目标：让其他用户不改源码也能运行网页工具和浏览器插件。第一阶段支持“本地可分享版”，第二阶段再升级到“云端多人版”。
+
+### 11.1 本地可分享版
+
+适用场景：实验室内部、朋友试用、研究者自己本地运行。用户本地运行后端，网页和插件都连接这个后端。
+
+后端：
+
+- 提供 `/api/health`，返回服务状态、模型名、存储模式、是否配置 API key。
+- 提供网页设置接口，让用户在本机填写和修改 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL` 等运行时配置。
+- 网页设置保存到本地 `data/local-settings.json`，优先级高于 `.env`，且不进入 git。
+- `.env` 仍可配置 `PORT`、`ANALYSIS_STORE_PATH`，也可作为模型配置的高级 fallback。
+- 提供 `.env.example`，不提交真实 API key。
+
+网页：
+
+- 支持 `VITE_API_BASE_URL`。为空时使用同源 `/api`，开发环境通过 Vite proxy 连接本地后端。
+- 如果前端和后端分开部署，构建时设置 `VITE_API_BASE_URL=https://your-api.example.com`。
+
+插件：
+
+- 不能硬编码 `http://127.0.0.1:8787`。
+- 提供 Options 页面，让用户填写后端地址。
+- 默认值是 `http://127.0.0.1:8787`。
+- 插件所有 `/api/...` 请求都通过这个配置的后端地址。
+
+### 11.2 云端多人版
+
+适用场景：公开网站和公开插件。用户不需要本地启动后端。
+
+要求：
+
+- API key 只放在后端环境变量中，不能进入前端或插件。
+- `analysis-store.json` 需要迁移到 SQLite/Postgres，并增加用户隔离。
+- 插件默认连接线上后端，同时允许高级用户切回本地后端。
+- 需要隐私说明：上传的图像、PDF、caption、解析记录会发送到配置的后端和模型服务。
+
+### 11.3 第一版实现范围
+
+- 新增 `/api/health`。
+- 新增 `.env.example`。
+- 前端 fetch 支持 `VITE_API_BASE_URL`。
+- 插件新增 Options 页面配置 API Base URL。
+- 更新 README，说明本地运行、网页访问、插件加载和后端地址配置。
+
+实现状态（2026-06-13）：
+
+- 已完成 `/api/health`：返回服务状态、模型名、base URL、API key 是否已配置和解析库模式，不返回真实 API key。
+- 已完成 `app/.env.example`。
+- 已完成 Web 前端 `VITE_API_BASE_URL` 支持；为空时继续走同源 `/api`。
+- 已完成浏览器插件 Options 页面；插件 API 请求不再硬编码本地地址，会读取用户配置的后端地址。
+- 已更新 `app/README.md` 和 `extension/README.md`。
+- 未完成公共多用户版本；仍需要登录、用户隔离、数据库迁移和隐私说明。
+
+实现状态（2026-06-15）：
+
+- 已完成本地设置页：用户可以在网页里填写 API key、Base URL 和 Model，不需要手动编辑 `.env`。
+- 已完成 `GET /api/settings`、`POST /api/settings`、`POST /api/settings/test`。
+- 已完成运行时配置合并：后端模型调用优先使用本地设置，其次使用环境变量。
+- 本地设置保存到 `app/data/local-settings.json`，该目录已被 git 忽略。
+
 ### M6：真实阅读环境集成
 
 状态：部分完成

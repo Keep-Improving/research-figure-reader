@@ -5,11 +5,91 @@ process.env.PORT = '0'
 process.env.NODE_ENV = 'test'
 
 const {
+  buildHealthPayload,
+  buildEffectiveModelConfig,
+  buildSettingsPayload,
   buildBrowserFigureContextFromHtmlPayload,
   buildBrowserPdfFallbackContext,
   createAnalysisStore,
+  createSettingsStore,
   buildCaptionBlockFromStart,
+  maskApiKey,
 } = await import('./server.js')
+
+test('health payload reports model and API key configuration without exposing the key', () => {
+  const payload = buildHealthPayload({
+    model: 'gpt-test',
+    baseUrl: 'https://api.example.com',
+    hasApiKey: true,
+    analysisStorePath: 'data/analysis-store.json',
+  })
+
+  assert.equal(payload.ok, true)
+  assert.equal(payload.model, 'gpt-test')
+  assert.equal(payload.baseUrl, 'https://api.example.com')
+  assert.equal(payload.hasApiKey, true)
+  assert.equal(payload.analysisStore, 'json-file')
+  assert.equal('apiKey' in payload, false)
+})
+
+test('settings payload masks API key and reports local override source', () => {
+  const payload = buildSettingsPayload({
+    env: {
+      OPENAI_API_KEY: 'env-api-key-secret',
+      OPENAI_BASE_URL: 'https://env.example.com/',
+      OPENAI_MODEL: 'gpt-env',
+    },
+    settings: {
+      apiKey: 'local-api-key-secret-1234',
+      baseUrl: 'https://local.example.com/',
+      model: 'gpt-local',
+    },
+    settingsPath: 'data/local-settings.json',
+  })
+
+  assert.equal(payload.apiKeyConfigured, true)
+  assert.equal(payload.apiKeyMasked, 'loc...1234')
+  assert.equal(payload.baseUrl, 'https://local.example.com')
+  assert.equal(payload.model, 'gpt-local')
+  assert.equal(payload.source, 'local-settings')
+  assert.equal(payload.settingsStore, 'json-file')
+  assert.equal('apiKey' in payload, false)
+})
+
+test('effective model config prefers local settings over environment', () => {
+  const config = buildEffectiveModelConfig({
+    env: {
+      OPENAI_API_KEY: 'env-api-key',
+      OPENAI_BASE_URL: 'https://env.example.com/',
+      OPENAI_MODEL: 'gpt-env',
+    },
+    settings: {
+      apiKey: 'local-api-key',
+      baseUrl: 'https://local.example.com/',
+      model: 'gpt-local',
+    },
+  })
+
+  assert.equal(config.apiKey, 'local-api-key')
+  assert.equal(config.baseUrl, 'https://local.example.com')
+  assert.equal(config.model, 'gpt-local')
+})
+
+test('settings store persists local configuration without leaking raw key in payload', async () => {
+  const store = createSettingsStore()
+  const saved = await store.save({
+    apiKey: ' local-test-api-key-secret ',
+    baseUrl: ' https://api.test.example.com/ ',
+    model: ' gpt-test ',
+  })
+  const loaded = await store.read()
+
+  assert.equal(saved.apiKey, 'local-test-api-key-secret')
+  assert.equal(saved.baseUrl, 'https://api.test.example.com')
+  assert.equal(saved.model, 'gpt-test')
+  assert.deepEqual(loaded, saved)
+  assert.equal(maskApiKey(loaded.apiKey), 'loc...cret')
+})
 
 test('HTML browser context prefers structured figure caption over weak alt text', () => {
   const context = buildBrowserFigureContextFromHtmlPayload({

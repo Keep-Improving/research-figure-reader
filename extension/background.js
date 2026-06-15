@@ -1,4 +1,21 @@
-const API_BASE = 'http://127.0.0.1:8787'
+const DEFAULT_API_BASE = 'http://127.0.0.1:8787'
+
+function normalizeApiBase(value) {
+  return String(value || DEFAULT_API_BASE).replace(/\/+$/, '')
+}
+
+function getApiBase() {
+  return new Promise((resolve) => {
+    chrome.storage.sync.get({ apiBaseUrl: DEFAULT_API_BASE }, (items) => {
+      resolve(normalizeApiBase(items.apiBaseUrl))
+    })
+  })
+}
+
+async function fetchApi(path, options) {
+  const apiBase = await getApiBase()
+  return fetch(`${apiBase}${path}`, options)
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'fetch-image-data-url') {
@@ -75,7 +92,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === 'request-figure-context') {
-    fetch(`${API_BASE}/api/browser/figure-context`, {
+    fetchApi('/api/browser/figure-context', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(message.payload),
@@ -95,7 +112,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === 'save-analysis') {
-    fetch(`${API_BASE}/api/analysis`, {
+    fetchApi('/api/analysis', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(message.payload),
@@ -115,7 +132,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === 'get-analysis') {
-    fetch(`${API_BASE}/api/analysis/${encodeURIComponent(message.id)}`)
+    fetchApi(`/api/analysis/${encodeURIComponent(message.id)}`)
       .then(async (response) => {
         const payload = await response.json().catch(() => null)
         sendResponse({ ok: response.ok, status: response.status, payload })
@@ -131,7 +148,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === 'analyze-figure') {
-    fetch(`${API_BASE}/api/analyze-image`, {
+    fetchApi('/api/analyze-image', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(message.payload),

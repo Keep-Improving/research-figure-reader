@@ -1,73 +1,48 @@
-# React + TypeScript + Vite
+# 科研图片理解工具 Web 端
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+这个目录包含网页工作台和本地 API 后端。网页端可以上传 PDF/图片、保存解析记录；浏览器插件也会连接同一个后端。
 
-Currently, two official plugins are available:
+## 本地运行
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```powershell
+npm install
+npm run server
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+在另一个终端启动网页：
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```powershell
+npm run dev
 ```
+
+默认地址：
+
+- 网页：`http://127.0.0.1:5173/`
+- 后端：`http://127.0.0.1:8787/`
+- 健康检查：`http://127.0.0.1:8787/api/health`
+
+首次打开网页后，进入“设置”，填写自己的 API key、Base URL 和 Model，然后点击“保存并测试”。这些设置会保存在本机 `data/local-settings.json`，该目录已被 git 忽略，不要发给别人。
+
+## 配置来源
+
+推荐使用网页“设置”页。环境变量仍可作为高级方式使用：
+
+- `OPENAI_API_KEY`：后端调用模型用的 API key。不要放到前端或插件里。
+- `OPENAI_BASE_URL`：OpenAI 兼容接口地址，默认 `https://api.openai.com`。
+- `OPENAI_MODEL`：模型名，默认可在 `.env` 里配置。
+- `PORT`：后端端口，默认 `8787`。
+- `ANALYSIS_STORE_PATH`：解析记录保存位置。
+- `VITE_API_BASE_URL`：前端构建时使用的后端地址。为空时使用同源 `/api`，本地开发通过 Vite proxy 转发。
+
+后端实际调用模型时优先使用网页“设置”页保存的本地配置；未填写时才读取环境变量。
+
+## 分开部署
+
+如果前端和后端不在同一个域名：
+
+```powershell
+$env:VITE_API_BASE_URL="https://your-api.example.com"
+npm run build
+```
+
+后端部署时需要设置 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`、`ANALYSIS_STORE_PATH` 等环境变量。公开多用户版本还需要接入登录、用户隔离和数据库存储，不建议直接把本地 JSON 存储作为公共服务使用。

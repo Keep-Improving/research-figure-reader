@@ -129,6 +129,90 @@
   background: #ffffff;
 }
 
+.settings-stage {
+  margin: 18px;
+  height: calc(100vh - 112px);
+  min-height: 520px;
+  overflow: auto;
+  border: 1px solid #dce3e7;
+  border-radius: 8px;
+  padding: 18px;
+  background: #ffffff;
+}
+
+.settings-card {
+  max-width: 760px;
+  display: grid;
+  gap: 18px;
+}
+
+.settings-card h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+}
+
+.settings-card p {
+  margin: 0;
+  color: #64717a;
+  line-height: 1.55;
+}
+
+.settings-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.settings-status-grid div {
+  min-width: 0;
+  border: 1px solid #dce3e7;
+  border-radius: 7px;
+  padding: 11px;
+  background: #fbfcfd;
+}
+
+.settings-status-grid span,
+.settings-form label span {
+  display: block;
+  margin-bottom: 6px;
+  color: #64717a;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.settings-status-grid strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.settings-form {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-form input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 42px;
+  border: 1px solid #c9d5db;
+  border-radius: 6px;
+  padding: 0 12px;
+  color: #172026;
+  font: inherit;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.settings-message {
+  border-left: 3px solid #1f6f8b;
+  padding: 9px 12px;
+  background: #eaf5f8;
+}
+
 .library-toolbar {
   display: flex;
   align-items: center;

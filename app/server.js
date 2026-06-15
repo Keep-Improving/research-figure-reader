@@ -7,13 +7,123 @@ import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs'
 
 const app = express()
 const port = Number(process.env.PORT || 8787)
-const model = process.env.OPENAI_MODEL || 'gpt-5.4'
-const baseUrl = (process.env.OPENAI_BASE_URL || 'https://api.openai.com').replace(/\/+$/, '')
 const dataDir = path.resolve('data')
 const analysisStorePath = process.env.ANALYSIS_STORE_PATH || path.join(dataDir, 'analysis-store.json')
+const settingsStorePath = process.env.LOCAL_SETTINGS_PATH || path.join(dataDir, 'local-settings.json')
 
 app.use(cors())
 app.use(express.json({ limit: '80mb' }))
+
+function buildHealthPayload({
+  model,
+  baseUrl,
+  hasApiKey,
+  analysisStorePath,
+}) {
+  return {
+    ok: true,
+    service: 'research-figure-reader-api',
+    model,
+    baseUrl,
+    hasApiKey,
+    analysisStore: analysisStorePath ? 'json-file' : 'memory',
+  }
+}
+
+function normalizeBaseUrl(value) {
+  return String(value || '').trim().replace(/\/+$/, '')
+}
+
+function normalizeSettings(settings = {}) {
+  const normalized = {}
+  if (typeof settings.apiKey === 'string') normalized.apiKey = settings.apiKey.trim()
+  if (typeof settings.baseUrl === 'string') normalized.baseUrl = normalizeBaseUrl(settings.baseUrl)
+  if (typeof settings.model === 'string') normalized.model = settings.model.trim()
+  return normalized
+}
+
+function maskApiKey(apiKey) {
+  const value = String(apiKey || '').trim()
+  if (!value) return ''
+  if (value.length <= 8) return '••••'
+  return `${value.slice(0, 3)}...${value.slice(-4)}`
+}
+
+function buildEffectiveModelConfig({
+  env = process.env,
+  settings = {},
+} = {}) {
+  const normalizedSettings = normalizeSettings(settings)
+  const apiKey = normalizedSettings.apiKey || env.OPENAI_API_KEY || ''
+  const baseUrl = normalizeBaseUrl(
+    normalizedSettings.baseUrl || env.OPENAI_BASE_URL || 'https://api.openai.com',
+  )
+  const model = normalizedSettings.model || env.OPENAI_MODEL || 'gpt-5.4'
+
+  return {
+    apiKey,
+    baseUrl,
+    model,
+    source: normalizedSettings.apiKey || normalizedSettings.baseUrl || normalizedSettings.model
+      ? 'local-settings'
+      : 'environment',
+  }
+}
+
+function buildSettingsPayload({
+  env = process.env,
+  settings = {},
+  settingsPath = settingsStorePath,
+} = {}) {
+  const config = buildEffectiveModelConfig({ env, settings })
+  return {
+    ok: true,
+    apiKeyConfigured: Boolean(config.apiKey),
+    apiKeyMasked: maskApiKey(config.apiKey),
+    baseUrl: config.baseUrl,
+    model: config.model,
+    source: config.source,
+    settingsStore: settingsPath ? 'json-file' : 'memory',
+  }
+}
+
+function createSettingsStore(filePath = null) {
+  let memorySettings = {}
+
+  async function read() {
+    if (!filePath) return { ...memorySettings }
+
+    try {
+      const raw = await fs.readFile(filePath, 'utf8')
+      return normalizeSettings(JSON.parse(raw))
+    } catch (error) {
+      if (error?.code === 'ENOENT') return {}
+      throw error
+    }
+  }
+
+  async function save(settings) {
+    const current = await read()
+    const incoming = normalizeSettings(settings)
+    const next = {
+      ...current,
+      ...Object.fromEntries(
+        Object.entries(incoming).filter(([, value]) => typeof value === 'string' && value.length > 0),
+      ),
+    }
+
+    if (!filePath) {
+      memorySettings = next
+      return { ...memorySettings }
+    }
+
+    await fs.mkdir(path.dirname(filePath), { recursive: true })
+    await fs.writeFile(filePath, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+    return next
+  }
+
+  return { read, save }
+}
 
 function sendJsonError(res, status, message, extra = {}) {
   return res.status(status).json({
@@ -22,9 +132,9 @@ function sendJsonError(res, status, message, extra = {}) {
   })
 }
 
-function formatNetworkError(error) {
+function formatNetworkError(error, endpointBaseUrl = 'model endpoint') {
   if (!(error instanceof Error)) {
-    return `Model request failed: ${baseUrl}`
+    return `Model request failed: ${endpointBaseUrl}`
   }
 
   const causeMessage =
@@ -33,10 +143,10 @@ function formatNetworkError(error) {
       : ''
 
   if (causeMessage.includes('Connect Timeout') || causeMessage.includes('ETIMEDOUT')) {
-    return `Connection to model endpoint timed out: ${baseUrl}`
+    return `Connection to model endpoint timed out: ${endpointBaseUrl}`
   }
 
-  return causeMessage || error.message || `Model request failed: ${baseUrl}`
+  return causeMessage || error.message || `Model request failed: ${endpointBaseUrl}`
 }
 
 function extractOutputPayload(payload) {
@@ -379,7 +489,7 @@ function createAnalysisStore(filePath = null) {
         figure: normalizeFigureSnapshot(input.figure),
         pageUrl: input.pageUrl || '',
         source: input.source || 'web-app',
-        model: input.model || model,
+        model: input.model || process.env.OPENAI_MODEL || 'gpt-5.4',
         answer: input.answer || '',
         uncertainty: input.uncertainty || '',
         sources: Array.isArray(input.sources) ? input.sources : [],
@@ -436,6 +546,96 @@ function createAnalysisStore(filePath = null) {
 }
 
 const analysisStore = createAnalysisStore(analysisStorePath)
+const settingsStore = createSettingsStore(settingsStorePath)
+
+async function getEffectiveModelConfig() {
+  const settings = await settingsStore.read()
+  return buildEffectiveModelConfig({ env: process.env, settings })
+}
+
+app.get('/api/health', async (_req, res) => {
+  const config = await getEffectiveModelConfig()
+  return res.json(
+    buildHealthPayload({
+      model: config.model,
+      baseUrl: config.baseUrl,
+      hasApiKey: Boolean(config.apiKey),
+      analysisStorePath,
+    }),
+  )
+})
+
+app.get('/api/settings', async (_req, res) => {
+  try {
+    const settings = await settingsStore.read()
+    return res.json(buildSettingsPayload({ env: process.env, settings, settingsPath: settingsStorePath }))
+  } catch (error) {
+    return sendJsonError(
+      res,
+      500,
+      error instanceof Error ? error.message : 'Failed to read settings.',
+    )
+  }
+})
+
+app.post('/api/settings', async (req, res) => {
+  try {
+    const saved = await settingsStore.save(req.body ?? {})
+    return res.json(buildSettingsPayload({ env: process.env, settings: saved, settingsPath: settingsStorePath }))
+  } catch (error) {
+    return sendJsonError(
+      res,
+      500,
+      error instanceof Error ? error.message : 'Failed to save settings.',
+    )
+  }
+})
+
+app.post('/api/settings/test', async (_req, res) => {
+  const config = await getEffectiveModelConfig()
+  if (!config.apiKey) {
+    return sendJsonError(res, 503, 'API key is not configured.')
+  }
+
+  try {
+    const response = await fetch(`${config.baseUrl}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: config.model,
+        input: 'Reply with OK.',
+      }),
+    })
+
+    const responseText = await response.text()
+    let payload = null
+    try {
+      payload = responseText ? JSON.parse(responseText) : null
+    } catch {
+      payload = null
+    }
+
+    if (!response.ok) {
+      return sendJsonError(
+        res,
+        response.status,
+        payload?.error?.message || responseText?.slice(0, 500) || 'Settings test failed.',
+      )
+    }
+
+    return res.json({
+      ok: true,
+      model: config.model,
+      baseUrl: config.baseUrl,
+      message: 'Settings test succeeded.',
+    })
+  } catch (error) {
+    return sendJsonError(res, 502, formatNetworkError(error, config.baseUrl))
+  }
+})
 
 function getCaptionStart(lineText) {
   const normalized = normalizeWhitespace(lineText)
@@ -1559,11 +1759,13 @@ app.post('/api/analyze-image', async (req, res) => {
     return sendJsonError(res, 400, 'Missing image payload. Upload an image or import a PDF first.')
   }
 
-  if (!process.env.OPENAI_API_KEY) {
+  const config = await getEffectiveModelConfig()
+
+  if (!config.apiKey) {
     return sendJsonError(
       res,
       503,
-      'OPENAI_API_KEY is not configured. The app does not use mock responses.',
+      'API key is not configured. Open Settings and add your own API key.',
     )
   }
 
@@ -1596,14 +1798,14 @@ app.post('/api/analyze-image', async (req, res) => {
   ].join('\n\n')
 
   try {
-    const response = await fetch(`${baseUrl}/v1/responses`, {
+    const response = await fetch(`${config.baseUrl}/v1/responses`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        Authorization: `Bearer ${config.apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model,
+        model: config.model,
         input: [
           {
             role: 'user',
@@ -1687,7 +1889,7 @@ app.post('/api/analyze-image', async (req, res) => {
         (responseText && responseText.trim().startsWith('<!DOCTYPE')
           ? `Upstream service returned HTML instead of JSON. Status ${response.status}.`
           : responseText?.slice(0, 500)) ||
-        `Multimodal request failed: ${baseUrl}`
+        `Multimodal request failed: ${config.baseUrl}`
 
       return sendJsonError(res, response.status, upstreamMessage)
     }
@@ -1698,14 +1900,14 @@ app.post('/api/analyze-image', async (req, res) => {
 
     let output = extractOutputPayload(payload)
     if (!output) {
-      const retryResponse = await fetch(`${baseUrl}/v1/responses`, {
+      const retryResponse = await fetch(`${config.baseUrl}/v1/responses`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          Authorization: `Bearer ${config.apiKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model,
+          model: config.model,
           input: [
             {
               role: 'user',
@@ -1746,7 +1948,7 @@ app.post('/api/analyze-image', async (req, res) => {
 
     return res.json(parseModelJson(output))
   } catch (error) {
-    return sendJsonError(res, 500, formatNetworkError(error))
+    return sendJsonError(res, 500, formatNetworkError(error, config?.baseUrl))
   }
 })
 
@@ -1777,12 +1979,17 @@ app.use((error, _req, res, next) => {
 if (process.env.NODE_ENV !== 'test') {
   app.listen(port, () => {
     console.log(`API server listening on http://localhost:${port}`)
-    console.log(`Model endpoint: ${baseUrl}/v1/responses`)
+    console.log('Model endpoint is configured by /api/settings and environment variables.')
   })
 }
 
 export {
   app,
+  buildHealthPayload,
+  buildSettingsPayload,
+  buildEffectiveModelConfig,
+  createSettingsStore,
+  maskApiKey,
   buildCaptionBlockFromStart,
   createAnalysisStore,
   buildBrowserFigureContextFromHtmlPayload,

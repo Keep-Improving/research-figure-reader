@@ -6,6 +6,12 @@ import './App.css'
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
+
+function apiUrl(path: string) {
+  return `${API_BASE_URL}${path}`
+}
+
 type Selection = {
   x: number
   y: number
@@ -139,6 +145,16 @@ type AnalysisRecord = {
   version: number
   createdAt: string
   updatedAt: string
+}
+
+type SettingsPayload = {
+  ok: boolean
+  apiKeyConfigured: boolean
+  apiKeyMasked: string
+  baseUrl: string
+  model: string
+  source: 'local-settings' | 'environment'
+  settingsStore: string
 }
 
 const quickQuestions = [
@@ -653,13 +669,22 @@ function App() {
   const [isInspectingPdf, setIsInspectingPdf] = useState(false)
   const [isIndexingPdf, setIsIndexingPdf] = useState(false)
   const [pageInput, setPageInput] = useState('1')
-  const [viewMode, setViewMode] = useState<'reader' | 'library'>('reader')
+  const [viewMode, setViewMode] = useState<'reader' | 'library' | 'settings'>('reader')
   const [analysisRecords, setAnalysisRecords] = useState<AnalysisRecord[]>([])
   const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null)
   const [libraryQuery, setLibraryQuery] = useState('')
   const [isLoadingLibrary, setIsLoadingLibrary] = useState(false)
   const [libraryStatus, setLibraryStatus] = useState('')
   const [saveStatus, setSaveStatus] = useState('')
+  const [settings, setSettings] = useState<SettingsPayload | null>(null)
+  const [settingsForm, setSettingsForm] = useState({
+    apiKey: '',
+    baseUrl: '',
+    model: '',
+  })
+  const [settingsStatus, setSettingsStatus] = useState('')
+  const [isSavingSettings, setIsSavingSettings] = useState(false)
+  const [isTestingSettings, setIsTestingSettings] = useState(false)
 
   const resetView = () => {
     setSelection(null)
@@ -683,7 +708,7 @@ function App() {
     setIsLoadingLibrary(true)
     setLibraryStatus('正在读取解析库')
     try {
-      const response = await fetch('/api/analysis')
+      const response = await fetch(apiUrl('/api/analysis'))
       const { ok, payload } = await parseApiResponse(response)
       if (!ok) throw new Error(payload?.error || '读取解析库失败')
       const records = Array.isArray(payload?.records) ? payload.records : []
@@ -694,6 +719,66 @@ function App() {
       setLibraryStatus(error instanceof Error ? error.message : '读取解析库失败')
     } finally {
       setIsLoadingLibrary(false)
+    }
+  }
+
+  const loadSettings = async () => {
+    setSettingsStatus('正在读取设置')
+    try {
+      const response = await fetch(apiUrl('/api/settings'))
+      const { ok, payload } = await parseApiResponse(response)
+      if (!ok) throw new Error(payload?.error || '读取设置失败')
+      setSettings(payload)
+      setSettingsForm({
+        apiKey: '',
+        baseUrl: payload.baseUrl || '',
+        model: payload.model || '',
+      })
+      setSettingsStatus(payload.apiKeyConfigured ? '已读取设置，API key 已配置' : '未配置 API key')
+    } catch (error) {
+      setSettingsStatus(error instanceof Error ? error.message : '读取设置失败')
+    }
+  }
+
+  const saveSettings = async () => {
+    setIsSavingSettings(true)
+    setSettingsStatus('正在保存设置')
+    try {
+      const response = await fetch(apiUrl('/api/settings'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settingsForm),
+      })
+      const { ok, payload } = await parseApiResponse(response)
+      if (!ok) throw new Error(payload?.error || '保存设置失败')
+      setSettings(payload)
+      setSettingsForm((current) => ({
+        ...current,
+        apiKey: '',
+        baseUrl: payload.baseUrl || current.baseUrl,
+        model: payload.model || current.model,
+      }))
+      setSettingsStatus('已保存。后续解析会使用这组本地设置。')
+    } catch (error) {
+      setSettingsStatus(error instanceof Error ? error.message : '保存设置失败')
+    } finally {
+      setIsSavingSettings(false)
+    }
+  }
+
+  const testSettings = async () => {
+    setIsTestingSettings(true)
+    setSettingsStatus('正在测试模型连接')
+    try {
+      await saveSettings()
+      const response = await fetch(apiUrl('/api/settings/test'), { method: 'POST' })
+      const { ok, payload } = await parseApiResponse(response)
+      if (!ok) throw new Error(payload?.error || '测试连接失败')
+      setSettingsStatus(`测试成功：${payload.model} @ ${payload.baseUrl}`)
+    } catch (error) {
+      setSettingsStatus(error instanceof Error ? error.message : '测试连接失败')
+    } finally {
+      setIsTestingSettings(false)
     }
   }
 
@@ -750,7 +835,7 @@ function App() {
           visualName: visual.name,
         },
       }
-      const response = await fetch('/api/analysis', {
+      const response = await fetch(apiUrl('/api/analysis'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -769,7 +854,7 @@ function App() {
     if (!confirmed) return
     setLibraryStatus('正在删除记录')
     try {
-      const response = await fetch(`/api/analysis/${encodeURIComponent(record.id)}`, { method: 'DELETE' })
+      const response = await fetch(apiUrl(`/api/analysis/${encodeURIComponent(record.id)}`), { method: 'DELETE' })
       const { ok, payload } = await parseApiResponse(response)
       if (!ok) throw new Error(payload?.error || '删除失败')
       setAnalysisRecords((records) => records.filter((item) => item.id !== record.id))
@@ -938,7 +1023,7 @@ function App() {
       setStatus('正在自动匹配当前页相关的 figure caption')
 
       try {
-        const response = await fetch('/api/pdf-inspect', {
+        const response = await fetch(apiUrl('/api/pdf-inspect'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -977,7 +1062,7 @@ function App() {
       setStatus('正在建立全文 figure 图谱')
 
       try {
-        const response = await fetch('/api/pdf-index', {
+        const response = await fetch(apiUrl('/api/pdf-index'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1180,7 +1265,7 @@ function App() {
         () => abortController.abort(),
         selectedRegionForAnalysis ? 90000 : 120000,
       )
-      const response = await fetch('/api/analyze-image', {
+      const response = await fetch(apiUrl('/api/analyze-image'), {
         method: 'POST',
         signal: abortController.signal,
         headers: { 'Content-Type': 'application/json' },
@@ -1319,6 +1404,16 @@ function App() {
             >
               解析库
             </button>
+            <button
+              type="button"
+              className={viewMode === 'settings' ? 'active' : ''}
+              onClick={() => {
+                setViewMode('settings')
+                void loadSettings()
+              }}
+            >
+              设置
+            </button>
           </div>
           <div className="upload-actions">
             <label className="file-button">
@@ -1455,6 +1550,77 @@ function App() {
             )}
           </div>
         </div>
+        ) : viewMode === 'settings' ? (
+          <div className="settings-stage">
+            <div className="settings-card">
+              <div>
+                <h2>本地模型设置</h2>
+                <p>这些设置只保存在这台电脑的本地后端，用来替代手动编辑 .env。不要把生成的本地配置文件发给别人。</p>
+              </div>
+              <div className="settings-status-grid">
+                <div>
+                  <span>API key</span>
+                  <strong>{settings?.apiKeyConfigured ? settings.apiKeyMasked || '已配置' : '未配置'}</strong>
+                </div>
+                <div>
+                  <span>来源</span>
+                  <strong>{settings?.source === 'local-settings' ? '本地设置' : '环境变量'}</strong>
+                </div>
+                <div>
+                  <span>存储</span>
+                  <strong>{settings?.settingsStore === 'json-file' ? '本地 JSON' : '内存'}</strong>
+                </div>
+              </div>
+              <form
+                className="settings-form"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  void saveSettings()
+                }}
+              >
+                <label>
+                  <span>API Key</span>
+                  <input
+                    type="password"
+                    value={settingsForm.apiKey}
+                    onChange={(event) => setSettingsForm((current) => ({ ...current, apiKey: event.target.value }))}
+                    placeholder={settings?.apiKeyConfigured ? '留空表示不修改已保存的 key' : '填写自己的 API key'}
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  <span>Base URL</span>
+                  <input
+                    value={settingsForm.baseUrl}
+                    onChange={(event) => setSettingsForm((current) => ({ ...current, baseUrl: event.target.value }))}
+                    placeholder="https://api.openai.com"
+                  />
+                </label>
+                <label>
+                  <span>Model</span>
+                  <input
+                    value={settingsForm.model}
+                    onChange={(event) => setSettingsForm((current) => ({ ...current, model: event.target.value }))}
+                    placeholder="gpt-5.4"
+                  />
+                </label>
+                <div className="settings-actions">
+                  <button type="submit" disabled={isSavingSettings || isTestingSettings}>
+                    {isSavingSettings ? '保存中' : '保存设置'}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={isSavingSettings || isTestingSettings}
+                    onClick={() => void testSettings()}
+                  >
+                    {isTestingSettings ? '测试中' : '保存并测试'}
+                  </button>
+                </div>
+              </form>
+              {settingsStatus ? <p className="settings-message">{settingsStatus}</p> : null}
+            </div>
+          </div>
         ) : (
           <div className="library-stage">
             <div className="library-toolbar">
@@ -1667,6 +1833,13 @@ function App() {
             <h2>解析库说明</h2>
             <p className="muted">这里读取本地后端保存的真实记录。插件和网站保存的结果会合并显示。</p>
             <p className="muted">删除只作用于单条记录，需要确认；当前版本还没有批量删除和图片历史重放。</p>
+          </div>
+        ) : viewMode === 'settings' ? (
+          <div className="panel">
+            <h2>设置说明</h2>
+            <p className="muted">API key 会保存在本机后端的 data/local-settings.json，不会写入前端代码或插件。</p>
+            <p className="muted">浏览器插件只需要配置后端地址；模型 key 仍由这个本地后端读取。</p>
+            <p className="muted">如果要发给别人使用，请发不包含 data/ 和 .env 的项目代码，让对方在设置页填自己的 key。</p>
           </div>
         ) : (
           <>
