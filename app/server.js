@@ -921,6 +921,7 @@ function getFigureMentions(text) {
 function splitRowIntoSegments(sortedItems, pageWidth) {
   const segments = []
   let current = []
+  const columnBoundary = pageWidth / 2
 
   for (const item of sortedItems) {
     const previous = current[current.length - 1]
@@ -928,8 +929,13 @@ function splitRowIntoSegments(sortedItems, pageWidth) {
     const isLargeColumnGap = gap > Math.max(28, pageWidth * 0.08)
     const crossesPageMiddle =
       previous && previous.x < pageWidth / 2 && item.x >= pageWidth / 2
+    const crossesColumnBoundary =
+      previous &&
+      previous.x + previous.width < columnBoundary &&
+      item.x > columnBoundary &&
+      previous.x + previous.width >= columnBoundary - Math.max(56, pageWidth * 0.08)
 
-    if (previous && (isLargeColumnGap || crossesPageMiddle)) {
+    if (previous && (isLargeColumnGap || crossesPageMiddle || crossesColumnBoundary)) {
       segments.push(current)
       current = [item]
     } else {
@@ -1114,7 +1120,31 @@ function looksLikeBodyParagraphContinuation(lineText) {
   return text.length > 120 && /[.!?]$/.test(text) && !/[;,]$/.test(text)
 }
 
+function looksLikeCaptionContinuation(lineText) {
+  const text = normalizeWhitespace(lineText)
+  if (!text) return false
+  if (getCaptionStart(text)) return true
+  if (/^(?:[a-z](?:[,\u2013-][a-z])?|[a-z]\)|\([a-z]\))\s*[,.;:)]?/i.test(text)) return true
+  if (/^(?:Data|Error bars?|Scale bars?|Representative|Quantification|Western blot|Images?|Expression|Distribution|Values|Bars)\b/i.test(text)) {
+    return true
+  }
+  if (looksLikeBodyParagraphContinuation(text)) return false
+  return false
+}
+
 function getCaptionFlowMode(page, startLine) {
+  const hasSameRowLeftText = page.lines.some(
+    (line) =>
+      line.id !== startLine.id &&
+      Math.abs(line.y - startLine.y) <= 2.8 &&
+      line.x < startLine.x &&
+      lineColumn(line, page) !== lineColumn(startLine, page),
+  )
+
+  if (lineColumn(startLine, page) === 1 && (detectPageLayout(page) === 'multi-column' || hasSameRowLeftText)) {
+    return 'multi-column'
+  }
+
   const nearbyBelow = page.lines.filter(
     (line) => line.y <= startLine.y + 2 && line.y >= startLine.y - Math.max(70, page.height * 0.09),
   )
@@ -1261,8 +1291,13 @@ function buildMultiColumnCaptionLines(page, startLine) {
     companionTop <= startLine.y + 3 &&
     companionTop >= startLine.y - Math.max(32, startLine.height * 3)
   const companionNotBodyBelow = companionTop >= startColumnBottom - Math.max(12, startLine.height * 1.4)
+  const companionFirstText = companionLines[0]?.text ?? ''
+  const companionLooksLikeCaption =
+    startColumn === 0 &&
+    looksLikeCaptionContinuation(companionFirstText) &&
+    !looksLikeBodyParagraphContinuation(companionFirstText)
 
-  if (!companionStartsNearCaption || !companionNotBodyBelow) {
+  if (!companionStartsNearCaption || !companionNotBodyBelow || !companionLooksLikeCaption) {
     return startColumnResult
   }
 

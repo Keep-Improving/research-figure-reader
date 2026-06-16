@@ -535,3 +535,61 @@ test('two-column caption merges panel continuations and stops before body paragr
   assert.equal(block.layoutMode, 'multi-column')
   assert.equal(block.stopReason, 'body-paragraph-boundary')
 })
+
+test('right-column caption does not merge same-height body text from left column', () => {
+  const page = {
+    pageNumber: 1,
+    width: 600,
+    height: 800,
+    lines: [
+      {
+        id: 'body-left-1',
+        text: 'The central position of TORC1 in the control of fundamental cellular processes is mirrored by the notable effect of its activity.',
+        x: 55,
+        xMax: 280,
+        y: 154,
+        height: 8,
+      },
+      {
+        id: 'body-left-2',
+        text: 'Following its initial discovery in worms, inhibition of TORC1 has been demonstrated to extend lifespan.',
+        x: 55,
+        xMax: 280,
+        y: 143,
+        height: 8,
+      },
+      {
+        id: 'caption-right-1',
+        text: 'Figure 1 | Inhibition of Pol III extends lifespan. a, Treatment of the RPC160-AID-myc strain with 0,',
+        x: 320,
+        xMax: 560,
+        y: 154,
+        height: 8,
+      },
+      {
+        id: 'caption-right-2',
+        text: '0.125 and 0.25 mM IAA triggers degradation of C160-AID-myc and extends chronological lifespan.',
+        x: 320,
+        xMax: 560,
+        y: 143,
+        height: 8,
+      },
+      {
+        id: 'caption-right-3',
+        text: 'b, Lifespan was measured as colony formation following tenfold serial dilution.',
+        x: 320,
+        xMax: 560,
+        y: 132,
+        height: 8,
+      },
+    ],
+  }
+
+  const block = buildCaptionBlockFromStart(page, page.lines[2])
+
+  assert.match(block.text, /Figure 1/)
+  assert.match(block.text, /colony formation/)
+  assert.doesNotMatch(block.text, /central position of TORC1/i)
+  assert.doesNotMatch(block.text, /initial discovery in worms/i)
+  assert.equal(block.layoutMode, 'multi-column')
+})
