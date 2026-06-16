@@ -44,6 +44,13 @@ npm run dev
 
 后端实际调用模型时优先使用网页“设置”页保存的本地配置；未填写时才读取环境变量。
 
+当前支持两类常见接口：
+
+- OpenAI Responses：适合支持 `input_image` 的多模态接口。
+- OpenAI-compatible Chat Completions：适合 Qwen-VL、GLM-Vision、OpenRouter 视觉模型等使用 `messages + image_url` 的接口。
+
+DeepSeek 等文本模型可以通过“保存并测试”验证文本连接，但如果模型本身不支持图片输入，就不能用于图片解析。
+
 ## 分开部署
 
 如果前端和后端不在同一个域名：

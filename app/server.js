@@ -92,10 +92,16 @@ function buildModelEndpoint({ baseUrl, purpose = 'image-analysis' }) {
   const lowerBaseUrl = normalizedBaseUrl.toLowerCase()
   const isChatCompletionsProvider =
     lowerBaseUrl.includes('api.deepseek.com') ||
+    lowerBaseUrl.includes('dashscope') ||
+    lowerBaseUrl.includes('aliyuncs.com') ||
+    lowerBaseUrl.includes('bigmodel.cn') ||
+    lowerBaseUrl.includes('api.z.ai') ||
+    lowerBaseUrl.includes('openrouter.ai') ||
+    lowerBaseUrl.includes('siliconflow') ||
     lowerBaseUrl.endsWith('/chat/completions') ||
     lowerBaseUrl.endsWith('/v1/chat/completions')
 
-  if (purpose === 'settings-test' && isChatCompletionsProvider) {
+  if (isChatCompletionsProvider) {
     const url = lowerBaseUrl.endsWith('/chat/completions') || lowerBaseUrl.endsWith('/v1/chat/completions')
       ? normalizedBaseUrl
       : `${normalizedBaseUrl}/chat/completions`
@@ -103,6 +109,109 @@ function buildModelEndpoint({ baseUrl, purpose = 'image-analysis' }) {
   }
 
   return { mode: 'responses', url: `${normalizedBaseUrl}/v1/responses` }
+}
+
+function getFigureAnalysisSchema() {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: ['answer', 'sources', 'uncertainty', 'annotations'],
+    properties: {
+      answer: { type: 'string' },
+      sources: { type: 'array', items: { type: 'string' } },
+      uncertainty: { type: 'string' },
+      annotations: {
+        type: 'array',
+        maxItems: 20,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: [
+            'label',
+            'what',
+            'howToRead',
+            'meaning',
+            'bbox',
+            'confidence',
+            'evidenceType',
+          ],
+          properties: {
+            label: { type: 'string' },
+            what: { type: 'string' },
+            howToRead: { type: 'string' },
+            meaning: { type: 'string' },
+            bbox: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['x', 'y', 'width', 'height'],
+              properties: {
+                x: { type: 'number', minimum: 0, maximum: 1000 },
+                y: { type: 'number', minimum: 0, maximum: 1000 },
+                width: { type: 'number', minimum: 1, maximum: 1000 },
+                height: { type: 'number', minimum: 1, maximum: 1000 },
+              },
+            },
+            confidence: { type: 'number', minimum: 0, maximum: 1 },
+            evidenceType: {
+              type: 'string',
+              enum: ['visible', 'caption', 'body', 'inference', 'uncertain'],
+            },
+          },
+        },
+      },
+    },
+  }
+}
+
+function buildModelRequest({
+  mode,
+  model,
+  prompt,
+  image,
+  structured = false,
+}) {
+  if (mode === 'chat-completions') {
+    const request = {
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: image } },
+          ],
+        },
+      ],
+    }
+    if (structured) request.response_format = { type: 'json_object' }
+    return request
+  }
+
+  const request = {
+    model,
+    input: [
+      {
+        role: 'user',
+        content: [
+          { type: 'input_text', text: prompt },
+          { type: 'input_image', image_url: image },
+        ],
+      },
+    ],
+  }
+
+  if (structured) {
+    request.text = {
+      format: {
+        type: 'json_schema',
+        name: 'figure_analysis',
+        schema: getFigureAnalysisSchema(),
+        strict: true,
+      },
+    }
+  }
+
+  return request
 }
 
 function createSettingsStore(filePath = null) {
@@ -188,6 +297,17 @@ function extractOutputPayload(payload) {
   const json = contentItems.find((content) => content?.json)?.json
   if (json && typeof json === 'object') {
     return json
+  }
+
+  const choiceMessageContent = payload?.choices?.[0]?.message?.content
+  if (typeof choiceMessageContent === 'string' && choiceMessageContent.trim()) {
+    return choiceMessageContent
+  }
+  if (Array.isArray(choiceMessageContent)) {
+    const textContent = choiceMessageContent.find(
+      (content) => content?.type === 'text' && typeof content.text === 'string',
+    )?.text
+    if (typeof textContent === 'string' && textContent.trim()) return textContent
   }
 
   return null
@@ -1841,74 +1961,15 @@ app.post('/api/analyze-image', async (req, res) => {
         Authorization: `Bearer ${config.apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: config.model,
-        input: [
-          {
-            role: 'user',
-            content: [
-              { type: 'input_text', text: prompt },
-              { type: 'input_image', image_url: image },
-            ],
-          },
-        ],
-        text: {
-          format: {
-            type: 'json_schema',
-            name: 'figure_analysis',
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              required: ['answer', 'sources', 'uncertainty', 'annotations'],
-              properties: {
-                answer: { type: 'string' },
-                sources: { type: 'array', items: { type: 'string' } },
-                uncertainty: { type: 'string' },
-                annotations: {
-                  type: 'array',
-                  maxItems: 20,
-                  items: {
-                    type: 'object',
-                    additionalProperties: false,
-                    required: [
-                      'label',
-                      'what',
-                      'howToRead',
-                      'meaning',
-                      'bbox',
-                      'confidence',
-                      'evidenceType',
-                    ],
-                    properties: {
-                      label: { type: 'string' },
-                      what: { type: 'string' },
-                      howToRead: { type: 'string' },
-                      meaning: { type: 'string' },
-                      bbox: {
-                        type: 'object',
-                        additionalProperties: false,
-                        required: ['x', 'y', 'width', 'height'],
-                        properties: {
-                          x: { type: 'number', minimum: 0, maximum: 1000 },
-                          y: { type: 'number', minimum: 0, maximum: 1000 },
-                          width: { type: 'number', minimum: 1, maximum: 1000 },
-                          height: { type: 'number', minimum: 1, maximum: 1000 },
-                        },
-                      },
-                      confidence: { type: 'number', minimum: 0, maximum: 1 },
-                      evidenceType: {
-                        type: 'string',
-                        enum: ['visible', 'caption', 'body', 'inference', 'uncertain'],
-                      },
-                    },
-                  },
-                },
-              },
-            },
-            strict: true,
-          },
-        },
-      }),
+      body: JSON.stringify(
+        buildModelRequest({
+          mode: analysisEndpoint.mode,
+          model: config.model,
+          prompt,
+          image,
+          structured: true,
+        }),
+      ),
     })
 
     const responseText = await response.text()
@@ -1943,21 +2004,15 @@ app.post('/api/analyze-image', async (req, res) => {
           Authorization: `Bearer ${config.apiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          model: config.model,
-          input: [
-            {
-              role: 'user',
-              content: [
-                {
-                  type: 'input_text',
-                  text: `${prompt}\n\nReturn only a valid JSON object. Do not wrap it in markdown.`,
-                },
-                { type: 'input_image', image_url: image },
-              ],
-            },
-          ],
-        }),
+        body: JSON.stringify(
+          buildModelRequest({
+            mode: analysisEndpoint.mode,
+            model: config.model,
+            prompt: `${prompt}\n\nReturn only a valid JSON object. Do not wrap it in markdown.`,
+            image,
+            structured: false,
+          }),
+        ),
       })
       const retryText = await retryResponse.text()
       let retryPayload = null
@@ -2026,6 +2081,8 @@ export {
   buildSettingsPayload,
   buildEffectiveModelConfig,
   buildModelEndpoint,
+  buildModelRequest,
+  extractOutputPayload,
   createSettingsStore,
   maskApiKey,
   buildCaptionBlockFromStart,

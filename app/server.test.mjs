@@ -9,6 +9,8 @@ const {
   buildEffectiveModelConfig,
   buildSettingsPayload,
   buildModelEndpoint,
+  buildModelRequest,
+  extractOutputPayload,
   buildBrowserFigureContextFromHtmlPayload,
   buildBrowserPdfFallbackContext,
   createAnalysisStore,
@@ -94,6 +96,39 @@ test('model endpoint keeps responses API for default multimodal analysis', () =>
 
   assert.equal(endpoint.mode, 'responses')
   assert.equal(endpoint.url, 'https://api.openai.com/v1/responses')
+})
+
+test('chat completions image request uses OpenAI-compatible vision content blocks', () => {
+  const request = buildModelRequest({
+    mode: 'chat-completions',
+    model: 'qwen-vl-plus',
+    prompt: 'Analyze this image.',
+    image: 'data:image/png;base64,AAA',
+    structured: true,
+  })
+
+  assert.equal(request.model, 'qwen-vl-plus')
+  assert.equal(request.messages[0].role, 'user')
+  assert.deepEqual(request.messages[0].content[0], { type: 'text', text: 'Analyze this image.' })
+  assert.deepEqual(request.messages[0].content[1], {
+    type: 'image_url',
+    image_url: { url: 'data:image/png;base64,AAA' },
+  })
+  assert.equal(request.response_format.type, 'json_object')
+})
+
+test('extract output payload reads chat completions text content', () => {
+  const output = extractOutputPayload({
+    choices: [
+      {
+        message: {
+          content: '{"answer":"ok","sources":[],"uncertainty":"","annotations":[]}',
+        },
+      },
+    ],
+  })
+
+  assert.equal(output, '{"answer":"ok","sources":[],"uncertainty":"","annotations":[]}')
 })
 
 test('settings store persists local configuration without leaking raw key in payload', async () => {

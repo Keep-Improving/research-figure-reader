@@ -450,6 +450,7 @@ type FigureSnapshot = {
 - 已完成 `GET /api/settings`、`POST /api/settings`、`POST /api/settings/test`。
 - 已完成运行时配置合并：后端模型调用优先使用本地设置，其次使用环境变量。
 - 本地设置保存到 `app/data/local-settings.json`，该目录已被 git 忽略。
+- 已完成 OpenAI-compatible Chat Completions 视觉请求格式，支持使用 `messages + image_url` 的 Qwen-VL、GLM-Vision、OpenRouter 等视觉模型接入；DeepSeek 文本模型仅用于文本连接测试，不作为图片解析模型。
 
 ### M6：真实阅读环境集成
 
