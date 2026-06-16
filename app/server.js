@@ -87,9 +87,21 @@ function buildSettingsPayload({
   }
 }
 
-function buildModelEndpoint({ baseUrl, purpose = 'image-analysis' }) {
+function buildModelEndpoint({ baseUrl, model, purpose = 'image-analysis' }) {
   const normalizedBaseUrl = normalizeBaseUrl(baseUrl || 'https://api.openai.com')
   const lowerBaseUrl = normalizedBaseUrl.toLowerCase()
+  if (lowerBaseUrl.includes('generativelanguage.googleapis.com') || lowerBaseUrl.includes('gemini')) {
+    const base = lowerBaseUrl.includes(':generatecontent')
+      ? normalizedBaseUrl
+      : `${normalizedBaseUrl}/v1beta/models/${encodeURIComponent(model || 'gemini-2.5-flash')}:generateContent`
+    return { mode: 'gemini-generate-content', url: base }
+  }
+
+  if (lowerBaseUrl.includes('api.anthropic.com') || lowerBaseUrl.includes('anthropic')) {
+    const url = lowerBaseUrl.endsWith('/v1/messages') ? normalizedBaseUrl : `${normalizedBaseUrl}/v1/messages`
+    return { mode: 'claude-messages', url }
+  }
+
   const isChatCompletionsProvider =
     lowerBaseUrl.includes('api.deepseek.com') ||
     lowerBaseUrl.includes('dashscope') ||
@@ -170,6 +182,56 @@ function buildModelRequest({
   image,
   structured = false,
 }) {
+  const dataUrlMatch = typeof image === 'string'
+    ? image.match(/^data:([^;,]+);base64,(.+)$/)
+    : null
+  const imageMimeType = dataUrlMatch?.[1] || 'image/png'
+  const imageBase64 = dataUrlMatch?.[2] || image
+
+  if (mode === 'gemini-generate-content') {
+    const request = {
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: prompt },
+            {
+              inline_data: {
+                mime_type: imageMimeType,
+                data: imageBase64,
+              },
+            },
+          ],
+        },
+      ],
+    }
+    if (structured) request.generationConfig = { responseMimeType: 'application/json' }
+    return request
+  }
+
+  if (mode === 'claude-messages') {
+    return {
+      model,
+      max_tokens: 4096,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: imageMimeType,
+                data: imageBase64,
+              },
+            },
+          ],
+        },
+      ],
+    }
+  }
+
   if (mode === 'chat-completions') {
     const request = {
       model,
@@ -212,6 +274,28 @@ function buildModelRequest({
   }
 
   return request
+}
+
+function buildModelHeaders({ mode, apiKey }) {
+  if (mode === 'gemini-generate-content') {
+    return {
+      'x-goog-api-key': apiKey,
+      'Content-Type': 'application/json',
+    }
+  }
+
+  if (mode === 'claude-messages') {
+    return {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json',
+    }
+  }
+
+  return {
+    Authorization: `Bearer ${apiKey}`,
+    'Content-Type': 'application/json',
+  }
 }
 
 function createSettingsStore(filePath = null) {
@@ -309,6 +393,16 @@ function extractOutputPayload(payload) {
     )?.text
     if (typeof textContent === 'string' && textContent.trim()) return textContent
   }
+
+  const geminiText = payload?.candidates?.[0]?.content?.parts?.find(
+    (part) => typeof part?.text === 'string',
+  )?.text
+  if (typeof geminiText === 'string' && geminiText.trim()) return geminiText
+
+  const claudeText = payload?.content?.find(
+    (content) => content?.type === 'text' && typeof content.text === 'string',
+  )?.text
+  if (typeof claudeText === 'string' && claudeText.trim()) return claudeText
 
   return null
 }
@@ -736,8 +830,23 @@ app.post('/api/settings/test', async (_req, res) => {
   }
 
   try {
-    const endpoint = buildModelEndpoint({ baseUrl: config.baseUrl, purpose: 'settings-test' })
-    const body = endpoint.mode === 'chat-completions'
+    const endpoint = buildModelEndpoint({ baseUrl: config.baseUrl, model: config.model, purpose: 'settings-test' })
+    const body = endpoint.mode === 'gemini-generate-content'
+      ? {
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: 'Reply with OK.' }],
+            },
+          ],
+        }
+      : endpoint.mode === 'claude-messages'
+        ? {
+            model: config.model,
+            max_tokens: 128,
+            messages: [{ role: 'user', content: 'Reply with OK.' }],
+          }
+        : endpoint.mode === 'chat-completions'
       ? {
           model: config.model,
           messages: [{ role: 'user', content: 'Reply with OK.' }],
@@ -750,10 +859,7 @@ app.post('/api/settings/test', async (_req, res) => {
 
     const response = await fetch(endpoint.url, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        'Content-Type': 'application/json',
-      },
+      headers: buildModelHeaders({ mode: endpoint.mode, apiKey: config.apiKey }),
       body: JSON.stringify(body),
     })
 
@@ -1917,7 +2023,7 @@ app.post('/api/analyze-image', async (req, res) => {
     )
   }
 
-  const analysisEndpoint = buildModelEndpoint({ baseUrl: config.baseUrl, purpose: 'image-analysis' })
+  const analysisEndpoint = buildModelEndpoint({ baseUrl: config.baseUrl, model: config.model, purpose: 'image-analysis' })
   if (config.baseUrl.toLowerCase().includes('api.deepseek.com')) {
     return sendJsonError(
       res,
@@ -1957,10 +2063,7 @@ app.post('/api/analyze-image', async (req, res) => {
   try {
     const response = await fetch(analysisEndpoint.url, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        'Content-Type': 'application/json',
-      },
+      headers: buildModelHeaders({ mode: analysisEndpoint.mode, apiKey: config.apiKey }),
       body: JSON.stringify(
         buildModelRequest({
           mode: analysisEndpoint.mode,
@@ -2000,10 +2103,7 @@ app.post('/api/analyze-image', async (req, res) => {
     if (!output) {
       const retryResponse = await fetch(analysisEndpoint.url, {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${config.apiKey}`,
-          'Content-Type': 'application/json',
-        },
+        headers: buildModelHeaders({ mode: analysisEndpoint.mode, apiKey: config.apiKey }),
         body: JSON.stringify(
           buildModelRequest({
             mode: analysisEndpoint.mode,
@@ -2082,6 +2182,7 @@ export {
   buildEffectiveModelConfig,
   buildModelEndpoint,
   buildModelRequest,
+  buildModelHeaders,
   extractOutputPayload,
   createSettingsStore,
   maskApiKey,

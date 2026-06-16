@@ -10,6 +10,7 @@ const {
   buildSettingsPayload,
   buildModelEndpoint,
   buildModelRequest,
+  buildModelHeaders,
   extractOutputPayload,
   buildBrowserFigureContextFromHtmlPayload,
   buildBrowserPdfFallbackContext,
@@ -98,6 +99,31 @@ test('model endpoint keeps responses API for default multimodal analysis', () =>
   assert.equal(endpoint.url, 'https://api.openai.com/v1/responses')
 })
 
+test('model endpoint detects Gemini generateContent API', () => {
+  const endpoint = buildModelEndpoint({
+    baseUrl: 'https://generativelanguage.googleapis.com',
+    model: 'gemini-2.5-flash',
+    purpose: 'image-analysis',
+  })
+
+  assert.equal(endpoint.mode, 'gemini-generate-content')
+  assert.equal(
+    endpoint.url,
+    'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
+  )
+})
+
+test('model endpoint detects Claude Messages API', () => {
+  const endpoint = buildModelEndpoint({
+    baseUrl: 'https://api.anthropic.com',
+    model: 'claude-sonnet-4-5',
+    purpose: 'image-analysis',
+  })
+
+  assert.equal(endpoint.mode, 'claude-messages')
+  assert.equal(endpoint.url, 'https://api.anthropic.com/v1/messages')
+})
+
 test('chat completions image request uses OpenAI-compatible vision content blocks', () => {
   const request = buildModelRequest({
     mode: 'chat-completions',
@@ -129,6 +155,74 @@ test('extract output payload reads chat completions text content', () => {
   })
 
   assert.equal(output, '{"answer":"ok","sources":[],"uncertainty":"","annotations":[]}')
+})
+
+test('gemini image request uses inline image data', () => {
+  const request = buildModelRequest({
+    mode: 'gemini-generate-content',
+    model: 'gemini-2.5-flash',
+    prompt: 'Analyze this image.',
+    image: 'data:image/png;base64,AAA',
+    structured: true,
+  })
+
+  assert.equal(request.contents[0].parts[0].text, 'Analyze this image.')
+  assert.deepEqual(request.contents[0].parts[1], {
+    inline_data: {
+      mime_type: 'image/png',
+      data: 'AAA',
+    },
+  })
+  assert.equal(request.generationConfig.responseMimeType, 'application/json')
+})
+
+test('claude image request uses base64 image source', () => {
+  const request = buildModelRequest({
+    mode: 'claude-messages',
+    model: 'claude-sonnet-4-5',
+    prompt: 'Analyze this image.',
+    image: 'data:image/jpeg;base64,BBB',
+    structured: false,
+  })
+
+  assert.equal(request.model, 'claude-sonnet-4-5')
+  assert.equal(request.max_tokens, 4096)
+  assert.deepEqual(request.messages[0].content[0], { type: 'text', text: 'Analyze this image.' })
+  assert.deepEqual(request.messages[0].content[1], {
+    type: 'image',
+    source: {
+      type: 'base64',
+      media_type: 'image/jpeg',
+      data: 'BBB',
+    },
+  })
+})
+
+test('model headers use provider-specific authentication', () => {
+  assert.deepEqual(buildModelHeaders({ mode: 'gemini-generate-content', apiKey: 'gemini-key' }), {
+    'x-goog-api-key': 'gemini-key',
+    'Content-Type': 'application/json',
+  })
+  assert.deepEqual(buildModelHeaders({ mode: 'claude-messages', apiKey: 'claude-key' }), {
+    'x-api-key': 'claude-key',
+    'anthropic-version': '2023-06-01',
+    'Content-Type': 'application/json',
+  })
+})
+
+test('extract output payload reads Gemini and Claude text content', () => {
+  assert.equal(
+    extractOutputPayload({
+      candidates: [{ content: { parts: [{ text: '{"answer":"gemini"}' }] } }],
+    }),
+    '{"answer":"gemini"}',
+  )
+  assert.equal(
+    extractOutputPayload({
+      content: [{ type: 'text', text: '{"answer":"claude"}' }],
+    }),
+    '{"answer":"claude"}',
+  )
 })
 
 test('settings store persists local configuration without leaking raw key in payload', async () => {

@@ -48,6 +48,8 @@ npm run dev
 
 - OpenAI Responses：适合支持 `input_image` 的多模态接口。
 - OpenAI-compatible Chat Completions：适合 Qwen-VL、GLM-Vision、OpenRouter 视觉模型等使用 `messages + image_url` 的接口。
+- Gemini：适合 Google Gemini `generateContent` 接口，Base URL 可填 `https://generativelanguage.googleapis.com`。
+- Claude：适合 Anthropic Messages API，Base URL 可填 `https://api.anthropic.com`。
 
 DeepSeek 等文本模型可以通过“保存并测试”验证文本连接，但如果模型本身不支持图片输入，就不能用于图片解析。
 
