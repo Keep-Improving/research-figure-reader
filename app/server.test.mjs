@@ -8,6 +8,7 @@ const {
   buildHealthPayload,
   buildEffectiveModelConfig,
   buildSettingsPayload,
+  buildModelEndpoint,
   buildBrowserFigureContextFromHtmlPayload,
   buildBrowserPdfFallbackContext,
   createAnalysisStore,
@@ -73,6 +74,26 @@ test('effective model config prefers local settings over environment', () => {
   assert.equal(config.apiKey, 'local-api-key')
   assert.equal(config.baseUrl, 'https://local.example.com')
   assert.equal(config.model, 'gpt-local')
+})
+
+test('model endpoint uses chat completions for DeepSeek settings tests', () => {
+  const endpoint = buildModelEndpoint({
+    baseUrl: 'https://api.deepseek.com',
+    purpose: 'settings-test',
+  })
+
+  assert.equal(endpoint.mode, 'chat-completions')
+  assert.equal(endpoint.url, 'https://api.deepseek.com/chat/completions')
+})
+
+test('model endpoint keeps responses API for default multimodal analysis', () => {
+  const endpoint = buildModelEndpoint({
+    baseUrl: 'https://api.openai.com',
+    purpose: 'image-analysis',
+  })
+
+  assert.equal(endpoint.mode, 'responses')
+  assert.equal(endpoint.url, 'https://api.openai.com/v1/responses')
 })
 
 test('settings store persists local configuration without leaking raw key in payload', async () => {

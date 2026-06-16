@@ -87,6 +87,24 @@ function buildSettingsPayload({
   }
 }
 
+function buildModelEndpoint({ baseUrl, purpose = 'image-analysis' }) {
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl || 'https://api.openai.com')
+  const lowerBaseUrl = normalizedBaseUrl.toLowerCase()
+  const isChatCompletionsProvider =
+    lowerBaseUrl.includes('api.deepseek.com') ||
+    lowerBaseUrl.endsWith('/chat/completions') ||
+    lowerBaseUrl.endsWith('/v1/chat/completions')
+
+  if (purpose === 'settings-test' && isChatCompletionsProvider) {
+    const url = lowerBaseUrl.endsWith('/chat/completions') || lowerBaseUrl.endsWith('/v1/chat/completions')
+      ? normalizedBaseUrl
+      : `${normalizedBaseUrl}/chat/completions`
+    return { mode: 'chat-completions', url }
+  }
+
+  return { mode: 'responses', url: `${normalizedBaseUrl}/v1/responses` }
+}
+
 function createSettingsStore(filePath = null) {
   let memorySettings = {}
 
@@ -95,7 +113,7 @@ function createSettingsStore(filePath = null) {
 
     try {
       const raw = await fs.readFile(filePath, 'utf8')
-      return normalizeSettings(JSON.parse(raw))
+      return normalizeSettings(JSON.parse(raw.replace(/^\uFEFF/, '')))
     } catch (error) {
       if (error?.code === 'ENOENT') return {}
       throw error
@@ -598,16 +616,25 @@ app.post('/api/settings/test', async (_req, res) => {
   }
 
   try {
-    const response = await fetch(`${config.baseUrl}/v1/responses`, {
+    const endpoint = buildModelEndpoint({ baseUrl: config.baseUrl, purpose: 'settings-test' })
+    const body = endpoint.mode === 'chat-completions'
+      ? {
+          model: config.model,
+          messages: [{ role: 'user', content: 'Reply with OK.' }],
+          stream: false,
+        }
+      : {
+          model: config.model,
+          input: 'Reply with OK.',
+        }
+
+    const response = await fetch(endpoint.url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${config.apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: config.model,
-        input: 'Reply with OK.',
-      }),
+      body: JSON.stringify(body),
     })
 
     const responseText = await response.text()
@@ -630,6 +657,7 @@ app.post('/api/settings/test', async (_req, res) => {
       ok: true,
       model: config.model,
       baseUrl: config.baseUrl,
+      endpointMode: endpoint.mode,
       message: 'Settings test succeeded.',
     })
   } catch (error) {
@@ -1769,6 +1797,15 @@ app.post('/api/analyze-image', async (req, res) => {
     )
   }
 
+  const analysisEndpoint = buildModelEndpoint({ baseUrl: config.baseUrl, purpose: 'image-analysis' })
+  if (config.baseUrl.toLowerCase().includes('api.deepseek.com')) {
+    return sendJsonError(
+      res,
+      400,
+      'DeepSeek 的 Chat Completions 接口可以用于测试文本连接，但当前模型配置不支持本工具需要的图片输入。请换成支持 vision/input_image 的 OpenAI 兼容多模态模型后再解析图片。',
+    )
+  }
+
   const regionText = selection
     ? `User selected image coordinates: x=${Math.round(selection.x)}, y=${Math.round(selection.y)}, width=${Math.round(selection.width)}, height=${Math.round(selection.height)}.`
     : 'No local region was selected. Analyze the full figure.'
@@ -1798,7 +1835,7 @@ app.post('/api/analyze-image', async (req, res) => {
   ].join('\n\n')
 
   try {
-    const response = await fetch(`${config.baseUrl}/v1/responses`, {
+    const response = await fetch(analysisEndpoint.url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${config.apiKey}`,
@@ -1900,7 +1937,7 @@ app.post('/api/analyze-image', async (req, res) => {
 
     let output = extractOutputPayload(payload)
     if (!output) {
-      const retryResponse = await fetch(`${config.baseUrl}/v1/responses`, {
+      const retryResponse = await fetch(analysisEndpoint.url, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${config.apiKey}`,
@@ -1988,6 +2025,7 @@ export {
   buildHealthPayload,
   buildSettingsPayload,
   buildEffectiveModelConfig,
+  buildModelEndpoint,
   createSettingsStore,
   maskApiKey,
   buildCaptionBlockFromStart,

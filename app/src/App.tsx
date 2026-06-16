@@ -806,7 +806,7 @@ function App() {
       const response = await fetchWithTimeout(apiUrl('/api/settings/test'), { method: 'POST' }, 20000)
       const { ok, payload } = await parseApiResponse(response)
       if (!ok) throw new Error(payload?.error || '测试连接失败')
-      setSettingsStatus(`测试成功：${payload.model} @ ${payload.baseUrl}`)
+      setSettingsStatus(`测试成功：${payload.model} @ ${payload.baseUrl}${payload.endpointMode ? ` (${payload.endpointMode})` : ''}`)
     } catch (error) {
       setSettingsStatus(formatApiError(error, '测试连接失败'))
     } finally {
