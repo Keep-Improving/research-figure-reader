@@ -82,6 +82,7 @@ type PdfIndexResult = {
   figures: FigureIndexEntry[]
   currentFigureLabel: string | null
   note: string
+  sourceHash?: string
 }
 
 type VisualSource = {
@@ -679,6 +680,7 @@ function buildPdfPageUrl(url: string, pageNumber?: number | null) {
 function App() {
   const imageRef = useRef<HTMLImageElement | null>(null)
   const lastInspectedRef = useRef('')
+  const activePdfSourceRef = useRef('')
   const [visual, setVisual] = useState<VisualSource | null>(null)
   const [pdfState, setPdfState] = useState<PdfState | null>(null)
   const [caption, setCaption] = useState('')
@@ -733,6 +735,7 @@ function App() {
     setFigureQuery('')
     setCaption('')
     lastInspectedRef.current = ''
+    activePdfSourceRef.current = ''
   }
 
   const loadAnalysisLibrary = async () => {
@@ -974,6 +977,7 @@ function App() {
     originalDataUrl: string,
   ) => {
     const preview = await renderPdfPage(documentProxy, pageNumber)
+    activePdfSourceRef.current = hashString(originalDataUrl.slice(0, 2000))
     setVisual({
       name,
       kind: 'pdf',
@@ -1009,6 +1013,7 @@ function App() {
   const loadFile = async (file: File) => {
     setIsLoadingFile(true)
     resetView()
+    clearPdfContext()
 
     try {
       if (file.type.startsWith('image/')) {
@@ -1046,7 +1051,8 @@ function App() {
   useEffect(() => {
     if (!visual?.originalDataUrl || !pdfState) return
 
-    const inspectionKey = `${visual.name}:${pdfState.currentPage}`
+    const pdfSourceHash = hashString(visual.originalDataUrl.slice(0, 2000))
+    const inspectionKey = `${pdfSourceHash}:${pdfState.currentPage}`
     if (lastInspectedRef.current === inspectionKey) return
     lastInspectedRef.current = inspectionKey
 
@@ -1067,6 +1073,7 @@ function App() {
         })
 
         const { ok, payload } = await parseApiResponse(response)
+        if (activePdfSourceRef.current !== pdfSourceHash) return
         if (!ok) {
           throw new Error(payload?.error || 'PDF 检索失败')
         }
@@ -1089,7 +1096,10 @@ function App() {
   }, [pdfState, selectedFigureLabel, visual])
 
   useEffect(() => {
-    if (!visual?.originalDataUrl || !pdfState || pdfIndex) return
+    if (!visual?.originalDataUrl || !pdfState) return
+
+    const pdfSourceHash = hashString(visual.originalDataUrl.slice(0, 2000))
+    if (pdfIndex?.sourceHash === pdfSourceHash) return
 
     const indexPdf = async () => {
       setIsIndexingPdf(true)
@@ -1106,11 +1116,12 @@ function App() {
         })
 
         const { ok, payload } = await parseApiResponse(response)
+        if (activePdfSourceRef.current !== pdfSourceHash) return
         if (!ok) {
           throw new Error(payload?.error || 'PDF 全文索引失败')
         }
 
-        setPdfIndex(payload)
+        setPdfIndex({ ...payload, sourceHash: pdfSourceHash })
         const initialLabel = payload.currentFigureLabel ?? payload.figures?.[0]?.figureLabel ?? null
         setSelectedFigureLabel(initialLabel)
         const initialFigure = payload.figures?.find((entry: FigureIndexEntry) => entry.figureLabel === initialLabel)
