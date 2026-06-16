@@ -452,6 +452,7 @@ type FigureSnapshot = {
 - 本地设置保存到 `app/data/local-settings.json`，该目录已被 git 忽略。
 - 已完成 OpenAI-compatible Chat Completions 视觉请求格式，支持使用 `messages + image_url` 的 Qwen-VL、GLM-Vision、OpenRouter 等视觉模型接入；DeepSeek 文本模型仅用于文本连接测试，不作为图片解析模型。
 - 已完成 Gemini `generateContent` 和 Claude Messages API 的基础图片输入 adapter；后续需要用真实账号分别验证不同模型名、额度和错误返回格式。
+- 已完成第一版 caption block 规则增强：单栏/双栏 caption 会记录 `layoutMode` 和 `stopReason`，并在遇到正文段落边界时停止，降低正文混入 caption 的概率。
 
 ### M6：真实阅读环境集成
 

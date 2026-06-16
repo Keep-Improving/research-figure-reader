@@ -1108,7 +1108,7 @@ function looksLikeBodyParagraphContinuation(lineText) {
   if (/^(?:Data|Error bars?|Scale bars?|Representative|Quantification|Western blot|Images?|Expression|Distribution)\b/i.test(text)) {
     return false
   }
-  if (/^(?:We|To|Next|Then|Here|This|These|Those|Interestingly|Notably|Therefore|However|In both|After|By|For that)\b/i.test(text)) {
+  if (/^(?:We|To|Next|Then|Here|This|These|Those|The|Interestingly|Notably|Therefore|However|In both|After|By|For that)\b/i.test(text)) {
     return true
   }
   return text.length > 120 && /[.!?]$/.test(text) && !/[;,]$/.test(text)
@@ -1161,19 +1161,28 @@ function buildSingleFlowCaptionLines(page, startLine) {
 
   const captionRows = []
   let previousY = orderedRows[startRowIndex].y
+  let stopReason = 'page-or-candidate-end'
 
   for (let index = startRowIndex; index < orderedRows.length; index += 1) {
     const row = orderedRows[index]
     const gap = previousY - row.y
+    const rowText = normalizeWhitespace(row.lines.map((line) => line.text).join(' '))
 
     if (index > startRowIndex && gap > Math.max(13.5, startLine.height * 1.8 + 4)) {
+      stopReason = looksLikeBodyParagraphContinuation(rowText) ? 'body-paragraph-boundary' : 'vertical-gap-boundary'
       break
     }
 
-    const rowText = normalizeWhitespace(row.lines.map((line) => line.text).join(' '))
-    if (index > startRowIndex && looksLikeSectionBoundary(rowText)) break
-    if (index > startRowIndex && getCaptionStart(rowText)) break
+    if (index > startRowIndex && looksLikeSectionBoundary(rowText)) {
+      stopReason = 'section-boundary'
+      break
+    }
+    if (index > startRowIndex && getCaptionStart(rowText)) {
+      stopReason = 'next-caption-start'
+      break
+    }
     if (index > startRowIndex && captionRows.length <= 2 && looksLikeBodyParagraphContinuation(rowText)) {
+      stopReason = 'body-paragraph-boundary'
       break
     }
 
@@ -1181,7 +1190,10 @@ function buildSingleFlowCaptionLines(page, startLine) {
     previousY = row.y
   }
 
-  return captionRows.flatMap((row) => row.lines.sort((a, b) => a.x - b.x))
+  return {
+    lines: captionRows.flatMap((row) => row.lines.sort((a, b) => a.x - b.x)),
+    stopReason,
+  }
 }
 
 function buildCaptionColumnLines(page, startLine, column) {
@@ -1206,32 +1218,42 @@ function buildCaptionColumnLines(page, startLine, column) {
 
   const captionLines = []
   let previous = lines[startIndex]
+  let stopReason = 'page-or-candidate-end'
 
   for (let index = startIndex; index < lines.length; index += 1) {
     const line = lines[index]
     const gap = previous.y - line.y
 
     if (index > startIndex && gap > Math.max(15, Math.max(previous.height, line.height) * 1.45 + 3)) {
+      stopReason = looksLikeBodyParagraphContinuation(line.text) ? 'body-paragraph-boundary' : 'vertical-gap-boundary'
       break
     }
 
-    if (index > startIndex && getCaptionStart(line.text)) break
-    if (index > startIndex && captionLines.length <= 2 && looksLikeBodyParagraphContinuation(line.text)) break
+    if (index > startIndex && getCaptionStart(line.text)) {
+      stopReason = 'next-caption-start'
+      break
+    }
+    if (index > startIndex && captionLines.length <= 2 && looksLikeBodyParagraphContinuation(line.text)) {
+      stopReason = 'body-paragraph-boundary'
+      break
+    }
 
     captionLines.push(line)
     previous = line
   }
 
-  return captionLines
+  return { lines: captionLines, stopReason }
 }
 
 function buildMultiColumnCaptionLines(page, startLine) {
   const startColumn = lineColumn(startLine, page)
   const otherColumn = startColumn === 0 ? 1 : 0
-  const startColumnLines = buildCaptionColumnLines(page, startLine, startColumn)
-  const companionLines = buildCaptionColumnLines(page, startLine, otherColumn)
+  const startColumnResult = buildCaptionColumnLines(page, startLine, startColumn)
+  const companionResult = buildCaptionColumnLines(page, startLine, otherColumn)
+  const startColumnLines = startColumnResult.lines
+  const companionLines = companionResult.lines
 
-  if (companionLines.length === 0) return startColumnLines
+  if (companionLines.length === 0) return startColumnResult
 
   const startColumnBottom = Math.min(...startColumnLines.map((line) => line.y))
   const companionTop = Math.max(...companionLines.map((line) => line.y))
@@ -1241,12 +1263,21 @@ function buildMultiColumnCaptionLines(page, startLine) {
   const companionNotBodyBelow = companionTop >= startColumnBottom - Math.max(12, startLine.height * 1.4)
 
   if (!companionStartsNearCaption || !companionNotBodyBelow) {
-    return startColumnLines
+    return startColumnResult
   }
 
-  return startColumn === 0
-    ? [...startColumnLines, ...companionLines]
-    : [...companionLines, ...startColumnLines]
+  const stopReason =
+    startColumnResult.stopReason === 'body-paragraph-boundary' ||
+    companionResult.stopReason === 'body-paragraph-boundary'
+      ? 'body-paragraph-boundary'
+      : startColumnResult.stopReason
+
+  return {
+    lines: startColumn === 0
+      ? [...startColumnLines, ...companionLines]
+      : [...companionLines, ...startColumnLines],
+    stopReason,
+  }
 }
 
 async function loadPdfTextPagesFromDataUrl(pdfDataUrl) {
@@ -1446,10 +1477,11 @@ function buildCaptionBlockFromStart(page, startLine) {
   const layoutMode = getCaptionFlowMode(page, startLine)
   const mergedBlocks =
     layoutMode === 'multi-column' ? mergeCaptionCompanionBlocks(blocks, anchorBlock, page) : []
-  const captionLines =
+  const captionResult =
     layoutMode === 'single-flow'
       ? buildSingleFlowCaptionLines(page, startLine)
       : buildMultiColumnCaptionLines(page, startLine)
+  const captionLines = captionResult.lines
   const seen = new Set()
   const text = normalizeWhitespace(
     captionLines
@@ -1473,6 +1505,8 @@ function buildCaptionBlockFromStart(page, startLine) {
     startLineText: startLine.text,
     lineCount: captionLines.length,
     layoutMode,
+    stopReason: captionResult.stopReason,
+    columnMode: layoutMode === 'multi-column' ? 'auto-detected' : 'single-flow',
     scoreRegion: {
       pageNumber: page.pageNumber,
       topY:

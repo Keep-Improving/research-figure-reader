@@ -403,3 +403,135 @@ test('caption extraction stops before following body paragraphs with figure ment
   const block = buildCaptionBlockFromStart(page, page.lines[0])
   assert.equal(block.text, page.lines[0].text)
 })
+
+test('single-column caption stops before body text in adjacent column', () => {
+  const page = {
+    pageNumber: 1,
+    width: 600,
+    height: 800,
+    lines: [
+      {
+        id: 'body-left-1',
+        text: 'The task of carrying out transcription in the eukaryotic nucleus is divided among RNA Pol I, II and III.',
+        x: 45,
+        xMax: 275,
+        y: 210,
+        height: 9,
+      },
+      {
+        id: 'body-left-2',
+        text: 'We confirmed that inhibition of Pol III extended lifespan and altered physiology.',
+        x: 45,
+        xMax: 275,
+        y: 198,
+        height: 9,
+      },
+      {
+        id: 'caption-start',
+        text: 'Figure 1 | Inhibition of Pol III extends lifespan. a, Treatment of the RPC160-AID-myc strain with IAA',
+        x: 315,
+        xMax: 560,
+        y: 170,
+        height: 8,
+      },
+      {
+        id: 'caption-2',
+        text: 'triggers degradation of C160-AID-myc and extends chronological lifespan (b).',
+        x: 315,
+        xMax: 560,
+        y: 159,
+        height: 8,
+      },
+      {
+        id: 'body-right-1',
+        text: 'The central position of TORC1 in the control of fundamental cellular processes has been reviewed extensively.',
+        x: 315,
+        xMax: 560,
+        y: 138,
+        height: 9,
+      },
+    ],
+  }
+
+  const block = buildCaptionBlockFromStart(page, page.lines[2])
+
+  assert.match(block.text, /Figure 1/)
+  assert.match(block.text, /chronological lifespan/)
+  assert.doesNotMatch(block.text, /central position of TORC1/i)
+  assert.equal(block.stopReason, 'body-paragraph-boundary')
+})
+
+test('two-column caption merges panel continuations and stops before body paragraphs', () => {
+  const page = {
+    pageNumber: 2,
+    width: 600,
+    height: 800,
+    lines: [
+      {
+        id: 'caption-left-1',
+        text: 'Figure 2 | Gut-specific inhibition of Pol III extends lifespan, reduces protein synthesis and increases',
+        x: 55,
+        xMax: 280,
+        y: 240,
+        height: 8,
+      },
+      {
+        id: 'caption-left-2',
+        text: 'tolerance to proteostatic stress. a, Induction of RNAi against rpc-1 specifically in the worm gut',
+        x: 55,
+        xMax: 280,
+        y: 229,
+        height: 8,
+      },
+      {
+        id: 'caption-left-3',
+        text: 'extends C. elegans lifespan at 20 °C in the presence of FUDR.',
+        x: 55,
+        xMax: 280,
+        y: 218,
+        height: 8,
+      },
+      {
+        id: 'caption-right-1',
+        text: 'd–f, Inducing dC160 RNAi expression in the gut by feeding RU486 to female flies leads to reduced',
+        x: 320,
+        xMax: 560,
+        y: 240,
+        height: 8,
+      },
+      {
+        id: 'caption-right-2',
+        text: 'pre-tRNAs (d), reduced gut protein synthesis (e), and improved survival in response to tunicamycin (f).',
+        x: 320,
+        xMax: 560,
+        y: 229,
+        height: 8,
+      },
+      {
+        id: 'body-left-1',
+        text: 'IAA did not have substantial effect on the survival of a strain carrying the AID domain fused to the largest subunit.',
+        x: 55,
+        xMax: 280,
+        y: 194,
+        height: 9,
+      },
+      {
+        id: 'body-right-1',
+        text: 'The worm gut is composed of only post-mitotic cells and has been used to model adult-onset inhibition.',
+        x: 320,
+        xMax: 560,
+        y: 194,
+        height: 9,
+      },
+    ],
+  }
+
+  const block = buildCaptionBlockFromStart(page, page.lines[0])
+
+  assert.match(block.text, /Figure 2/)
+  assert.match(block.text, /d–f/)
+  assert.doesNotMatch(block.text, /IAA did not/)
+  assert.doesNotMatch(block.text, /worm gut is composed/)
+  assert.equal(block.layoutMode, 'multi-column')
+  assert.equal(block.stopReason, 'body-paragraph-boundary')
+})

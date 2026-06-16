@@ -54,6 +54,8 @@ type PdfEvidence = {
   directReferences?: string[]
   matchedKeywords?: string[]
   matchReason?: 'direct_figure_reference' | 'caption_keyword_proximity' | 'near_caption_page'
+  layoutMode?: string
+  stopReason?: string
   region?: {
     topY: number
     bottomY: number
@@ -1922,6 +1924,12 @@ function App() {
                       页码：{topCaption.pageNumber}
                       {typeof topCaption.score === 'number' ? `；置信分：${topCaption.score}` : ''}
                     </p>
+                    {topCaption.layoutMode || topCaption.stopReason ? (
+                      <p>
+                        {topCaption.layoutMode ? `版面：${topCaption.layoutMode}` : ''}
+                        {topCaption.stopReason ? `；停止原因：${topCaption.stopReason}` : ''}
+                      </p>
+                    ) : null}
                     <p>{topCaption.text}</p>
                   </div>
                 ) : null}
