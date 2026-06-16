@@ -573,6 +573,35 @@ async function parseApiResponse(response: Response) {
   }
 }
 
+function formatApiError(error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message : fallback
+  if (
+    message === 'Failed to fetch' ||
+    (error instanceof DOMException && error.name === 'AbortError') ||
+    message.includes('接口返回了 HTML 页面') ||
+    message.includes('接口返回了非 JSON 内容') ||
+    message.includes('状态码 502') ||
+    message.includes('状态码 404')
+  ) {
+    return [
+      '连接不到本地后端。请确认已经在 app 目录运行 npm run start:local，或至少运行 npm run server。',
+      '默认后端地址应为 http://127.0.0.1:8787。',
+      `原始错误：${message}`,
+    ].join('\n')
+  }
+  return message
+}
+
+function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 8000) {
+  const controller = new AbortController()
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
+
+  return fetch(url, {
+    ...options,
+    signal: controller.signal,
+  }).finally(() => window.clearTimeout(timeoutId))
+}
+
 async function createThumbnailDataUrl(dataUrl: string, maxWidth = 360): Promise<string> {
   const image = await loadImageDataUrl(dataUrl)
   const scale = Math.min(1, maxWidth / image.naturalWidth)
@@ -725,7 +754,7 @@ function App() {
   const loadSettings = async () => {
     setSettingsStatus('正在读取设置')
     try {
-      const response = await fetch(apiUrl('/api/settings'))
+      const response = await fetchWithTimeout(apiUrl('/api/settings'))
       const { ok, payload } = await parseApiResponse(response)
       if (!ok) throw new Error(payload?.error || '读取设置失败')
       setSettings(payload)
@@ -736,7 +765,7 @@ function App() {
       })
       setSettingsStatus(payload.apiKeyConfigured ? '已读取设置，API key 已配置' : '未配置 API key')
     } catch (error) {
-      setSettingsStatus(error instanceof Error ? error.message : '读取设置失败')
+      setSettingsStatus(formatApiError(error, '读取设置失败'))
     }
   }
 
@@ -744,7 +773,7 @@ function App() {
     setIsSavingSettings(true)
     setSettingsStatus('正在保存设置')
     try {
-      const response = await fetch(apiUrl('/api/settings'), {
+      const response = await fetchWithTimeout(apiUrl('/api/settings'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settingsForm),
@@ -759,8 +788,10 @@ function App() {
         model: payload.model || current.model,
       }))
       setSettingsStatus('已保存。后续解析会使用这组本地设置。')
+      return true
     } catch (error) {
-      setSettingsStatus(error instanceof Error ? error.message : '保存设置失败')
+      setSettingsStatus(formatApiError(error, '保存设置失败'))
+      return false
     } finally {
       setIsSavingSettings(false)
     }
@@ -770,13 +801,14 @@ function App() {
     setIsTestingSettings(true)
     setSettingsStatus('正在测试模型连接')
     try {
-      await saveSettings()
-      const response = await fetch(apiUrl('/api/settings/test'), { method: 'POST' })
+      const saved = await saveSettings()
+      if (!saved) return
+      const response = await fetchWithTimeout(apiUrl('/api/settings/test'), { method: 'POST' }, 20000)
       const { ok, payload } = await parseApiResponse(response)
       if (!ok) throw new Error(payload?.error || '测试连接失败')
       setSettingsStatus(`测试成功：${payload.model} @ ${payload.baseUrl}`)
     } catch (error) {
-      setSettingsStatus(error instanceof Error ? error.message : '测试连接失败')
+      setSettingsStatus(formatApiError(error, '测试连接失败'))
     } finally {
       setIsTestingSettings(false)
     }

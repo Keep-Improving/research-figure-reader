@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "server": "node server.js",
+    "start:local": "node scripts/start-local.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "verify:ui": "node scripts/verify-ui.mjs",

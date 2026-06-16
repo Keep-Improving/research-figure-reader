@@ -6,10 +6,18 @@
 
 ```powershell
 npm install
+npm run start:local
+```
+
+`start:local` 会同时检查依赖、启动本地后端，并打开 Vite 前端服务。看到提示后打开 `http://127.0.0.1:5173/`。
+
+如果想手动分开启动，也可以在一个终端运行：
+
+```powershell
 npm run server
 ```
 
-在另一个终端启动网页：
+在另一个终端运行：
 
 ```powershell
 npm run dev
